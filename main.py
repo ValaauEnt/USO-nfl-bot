@@ -1339,6 +1339,14 @@ async def tradetracker(interaction: discord.Interaction):
     await interaction.followup.send(embed=build_trade_tracker_embed(sections))
 
 
+@bot.tree.command(name="nflwatch", description="Show current NFL trades, contracts, and roster moves")
+async def nflwatch(interaction: discord.Interaction):
+    await interaction.response.defer()
+    sections = await get_market_watch_sections()
+    embed = build_market_watch_embed(sections)
+    await interaction.followup.send(embed=embed)
+
+
 @bot.event
 async def on_ready():
     global session

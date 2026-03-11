@@ -714,7 +714,8 @@ def build_news_embed(items: list[dict]) -> discord.Embed:
 
     for item in items[:6]:
         source = item.get("source", "Source")
-        value = f"{item.get('description', '')[:180]}\n{item.get('url', '')}\n**Source:** {source}"
+        link = f" [🔗]({item['url']})" if item.get("url") else ""
+        value = f"{item.get('description', '')[:180]}{link}\n**Source:** {source}"
         embed.add_field(name=item.get("headline", "Headline")[:256], value=value[:1024], inline=False)
 
     return embed
@@ -737,9 +738,8 @@ def build_recent_trades_embed(items: list[dict]) -> discord.Embed:
 
     for item in items[:6]:
         source = item.get("source", "Source")
-        text = item.get("description", "No summary available.")[:220]
-        if item.get("url"):
-            text = f"{text}\n{item['url']}\n**Source:** {source}"
+        link = f" [🔗]({item['url']})" if item.get("url") else ""
+        text = f"{item.get('description', 'No summary available.')[:220]}{link}\n**Source:** {source}"
         embed.add_field(name=item.get("headline", "Headline")[:256], value=text[:1024], inline=False)
 
     embed.set_footer(text="USO NFL Bot • Trade/news tracker")
@@ -759,7 +759,8 @@ def build_trade_tracker_embed(sections: dict) -> discord.Embed:
         lines = []
         for item in items[:3]:
             source = item.get("source", "")
-            lines.append(f"• **{item.get('headline','Headline')}** ({source})")
+            link = f" [🔗]({item['url']})" if item.get("url") else ""
+            lines.append(f"• **{item.get('headline','Headline')}**{link} ({source})")
         return "\n".join(lines)
 
     embed.add_field(name="Completed / Strong Signals", value=block(sections["completed"]), inline=False)
@@ -782,7 +783,8 @@ def build_market_watch_embed(sections: dict) -> discord.Embed:
         lines = []
         for item in items[:5]:
             source = item.get("source", "Source")
-            lines.append(f"• **{item['headline']}** ({source})")
+            link = f" [🔗]({item['url']})" if item.get("url") else ""
+            lines.append(f"• **{item['headline']}**{link} ({source})")
         return "\n".join(lines)
 
     embed.add_field(name="🔁 Trades", value=format_block(sections["trades"]), inline=False)

@@ -769,6 +769,29 @@ def build_trade_tracker_embed(sections: dict) -> discord.Embed:
     return embed
 
 
+def build_market_watch_embed(sections: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title="📊 NFL MARKET WATCH",
+        description="Latest trades and contract headlines",
+        color=0x7A5C2E,
+    )
+
+    def format_block(items, empty_text="None right now."):
+        if not items:
+            return empty_text
+        lines = []
+        for item in items[:5]:
+            source = item.get("source", "Source")
+            lines.append(f"• **{item['headline']}** ({source})")
+        return "\n".join(lines)
+
+    embed.add_field(name="🔁 Trades", value=format_block(sections["trades"]), inline=False)
+    embed.add_field(name="💰 Contracts", value=format_block(sections["contracts"]), inline=False)
+    embed.add_field(name="📝 Other Moves", value=format_block(sections["other"]), inline=False)
+    embed.set_footer(text="USO NFL Bot • Live market watch")
+    return embed
+
+
 def build_game_stats_embed(game_name: str, summary: dict) -> discord.Embed:
     embed = discord.Embed(
         title=f"📊 {game_name}",

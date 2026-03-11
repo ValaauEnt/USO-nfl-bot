@@ -351,20 +351,6 @@ async def get_news_items(limit: int = 5) -> list[dict]:
     return yahoo_items
 
 
-async def get_recent_trade_articles(limit: int = 8) -> list[dict]:
-    items = await get_news_items(limit=20)
-    trades = []
-
-    for item in items:
-        text = f"{item.get('headline', '')} {item.get('description', '')}".lower()
-        if any(word in text for word in TRADE_KEYWORDS):
-            trades.append(item)
-        if len(trades) >= limit:
-            break
-
-    return trades
-
-
 async def get_trade_tracker_sections(limit: int = 12) -> dict:
     items = await get_news_items(limit=30)
     sections = {"completed": [], "rumors": [], "other": []}
@@ -807,32 +793,6 @@ def build_news_embed(items: list[dict]) -> discord.Embed:
         value = f"{desc}\n{link}\n**Source:** {source}" if link else f"{desc}\n**Source:** {source}"
         embed.add_field(name=item.get("headline", "Headline")[:256], value=value[:1024], inline=False)
 
-    return embed
-
-
-def build_recent_trades_embed(items: list[dict]) -> discord.Embed:
-    embed = discord.Embed(
-        title="🔥 NFL OFFSEASON TRADE TRACKER",
-        description="Recent trade-related headlines",
-        color=0x7A5C2E
-    )
-
-    if not items:
-        embed.add_field(
-            name="No recent trade headlines found",
-            value="No trade-related headlines were returned right now.",
-            inline=False
-        )
-        return embed
-
-    for item in items[:6]:
-        source = item.get("source", "Source")
-        link = f"[Read Article]({item['url']})" if item.get("url") else ""
-        desc = item.get("description", "No summary available.")[:220]
-        text = f"{desc}\n{link}\n**Source:** {source}" if link else f"{desc}\n**Source:** {source}"
-        embed.add_field(name=item.get("headline", "Headline")[:256], value=text[:1024], inline=False)
-
-    embed.set_footer(text="USO NFL Bot • Trade/news tracker")
     return embed
 
 
@@ -1469,13 +1429,6 @@ async def headlines(interaction: discord.Interaction):
     await interaction.response.defer()
     items = await get_news_items()
     await interaction.followup.send(embed=build_news_embed(items))
-
-
-@bot.tree.command(name="recenttrades", description="Show recent NFL trade headlines")
-async def recenttrades(interaction: discord.Interaction):
-    await interaction.response.defer()
-    items = await get_recent_trade_articles()
-    await interaction.followup.send(embed=build_recent_trades_embed(items))
 
 
 @bot.tree.command(name="tradetracker", description="Show categorized NFL trade headlines")

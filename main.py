@@ -303,7 +303,7 @@ async def build_player_index() -> None:
         position = item.get("position", {}).get("abbreviation", "UNK")
         team = item.get("team", {}).get("abbreviation", "FA")
         jersey = item.get("jersey", "")
-        headshot = item.get("headshot", {}).get("href", "")
+        headshot = f"https://a.espncdn.com/i/headshots/nfl/players/full/{athlete_id}.png"
         team_logo = ""
         logos = item.get("team", {}).get("logos", [])
         if isinstance(logos, list) and logos:
@@ -366,12 +366,15 @@ def merge_player_profile(base_player: dict, overview: dict) -> dict:
     player = dict(base_player)
     player["profile_source"] = "ESPN athlete index"
 
+    # Always use the ESPN headshot CDN URL — most reliable source
+    if player.get("id"):
+        player["headshot"] = f"https://a.espncdn.com/i/headshots/nfl/players/full/{player['id']}.png"
+
     athlete = overview.get("athlete", {}) if isinstance(overview, dict) else {}
     if athlete:
         team_abbr = athlete.get("team", {}).get("abbreviation")
         position_abbr = athlete.get("position", {}).get("abbreviation")
         jersey = athlete.get("jersey")
-        headshot = athlete.get("headshot", {}).get("href")
 
         if team_abbr:
             player["team"] = team_abbr
@@ -379,8 +382,6 @@ def merge_player_profile(base_player: dict, overview: dict) -> dict:
             player["position"] = position_abbr
         if jersey:
             player["jersey"] = jersey
-        if headshot:
-            player["headshot"] = headshot
 
         team_logo = ""
         logos = athlete.get("team", {}).get("logos", [])

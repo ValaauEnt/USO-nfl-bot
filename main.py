@@ -1493,7 +1493,7 @@ async def nflwatch(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
-@bot.tree.command(name="leagueleaders", description="Show NFL stat leaders for offense and defense")
+@bot.tree.command(name="nfl-leaders", description="Show NFL stat leaders for offense and defense")
 async def leagueleaders(interaction: discord.Interaction):
     await interaction.response.defer()
     data = await get_league_leaders()

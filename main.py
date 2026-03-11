@@ -4,15 +4,17 @@ import aiohttp
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from datetime import datetime
+from datetime import datetime, time as dtime
+from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-# Optional auto-post channels. Leave as 0 if unused.
+# Optional auto-post channels. Set to your Discord channel ID to enable.
 SCORES_CHANNEL_ID = 0
 NEWS_CHANNEL_ID = 0
 ALERTS_CHANNEL_ID = 0
+NFLWATCH_CHANNEL_ID = 0  # Auto-posts NFL market watch at 8am and 5pm ET daily
 
 # ESPN
 ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
@@ -1240,6 +1242,25 @@ async def news_loop():
     )
 
 
+_EASTERN = ZoneInfo("America/New_York")
+
+@tasks.loop(time=[
+    dtime(8, 0, tzinfo=_EASTERN),
+    dtime(17, 0, tzinfo=_EASTERN),
+])
+async def nflwatch_loop():
+    if not NFLWATCH_CHANNEL_ID:
+        return
+    channel = bot.get_channel(NFLWATCH_CHANNEL_ID)
+    if channel is None:
+        return
+    sections = await get_market_watch_sections()
+    embed = build_market_watch_embed(sections)
+    now_et = datetime.now(_EASTERN)
+    embed.set_footer(text=f"USO NFL Bot • Auto-posted {now_et.strftime('%I:%M %p ET • %b %d, %Y')}")
+    await channel.send(embed=embed)
+
+
 @bot.tree.command(name="scoreboard", description="Show NFL scores — browse past weeks, current week, and live games")
 async def scoreboard(interaction: discord.Interaction):
     await interaction.response.defer()
@@ -1376,6 +1397,9 @@ async def on_ready():
 
     if not news_loop.is_running():
         news_loop.start()
+
+    if not nflwatch_loop.is_running():
+        nflwatch_loop.start()
 
     print(f"BOT READY - Logged in as {bot.user}")
 

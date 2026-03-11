@@ -2,17 +2,17 @@
 
 A Discord bot for tracking live NFL scores, news, player stats, game logs, and trade headlines. Data is sourced from ESPN's public APIs with NFL.com and Yahoo Sports as fallbacks.
 
-## Features
+## Commands
 
-- `/scoreboard` — Live NFL scores for the current week, updated every 45 seconds
-- `/gamestats <team>` — Stat leaders for a specific game (by team abbreviation)
-- `/playerstats <name>` — Player stats with autocomplete search
+- `/scoreboard` — Live NFL scores for the current week, with Prev/Next week and Regular Season/Playoffs toggle
+- `/gamestats <team>` — Stat leaders for a specific live game (by team abbreviation)
+- `/playerstats <name>` — Player stats with autocomplete search and season navigation
 - `/gamelog <name>` — Paginated game-by-game log for a player
+- `/seasonstats <name>` — Season totals with year buttons and game log toggle
 - `/headlines` — Latest NFL headlines
-- `/recenttrades` — Recent trade-related news
-- `/tradetracker` — Trade headlines categorized as completed, rumored, or other
-- Auto-post scores and news to configured channels (optional)
-- Score change alerts posted to a configurable alerts channel
+- `/tradetracker` — Trade headlines categorized as Completed, Rumors, or Other
+- `/nflwatch` — NFL trades, contracts, and roster moves market watch
+- `/nfl-leaders` — Offensive and defensive stat leaders with toggle buttons
 
 ## Setup
 
@@ -24,14 +24,16 @@ Set these to Discord channel IDs to enable auto-posting:
 - `SCORES_CHANNEL_ID` — Auto-updates live scores every 45 seconds
 - `NEWS_CHANNEL_ID` — Auto-posts headlines every 10 minutes
 - `ALERTS_CHANNEL_ID` — Posts score change and final game alerts
+- `NFLWATCH_CHANNEL_ID` — Auto-posts NFL market watch at 8am and 5pm ET daily
 
 ## Architecture
 
 - **main.py** — Single-file bot with all logic
-- Data sources: ESPN scoreboard, news, athlete, and summary APIs
+- Data sources: ESPN scoreboard, news, athlete, gamelog, and leaders APIs
 - Fallback scrapers for NFL.com and Yahoo Sports
-- Player index built on startup from ESPN athletes endpoint (~20,000 players)
+- Player index built on startup from all 32 team rosters (~2,496 active players)
 - Player pipeline: name search → athlete ID → profile + gamelog fetched concurrently → merged result
+- Scheduled auto-posts use `discord.ext.tasks` with Eastern timezone support via `zoneinfo`
 
 ## Dependencies
 
@@ -41,4 +43,4 @@ Set these to Discord channel IDs to enable auto-posting:
 
 ## Running
 
-The bot runs via the "Start application" workflow (`python main.py`). It requires `DISCORD_TOKEN` to be set as a secret.
+The bot runs via the "Start application" workflow (`python main.py`). It requires `DISCORD_TOKEN` to be set as a secret. Deployed as a VM (always-on) so the bot stays connected 24/7.

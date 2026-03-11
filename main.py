@@ -700,6 +700,41 @@ def build_player_stats_embed(player: dict) -> discord.Embed:
     return embed
 
 
+class PlayerStatsView(discord.ui.View):
+    """Prev / Next season navigation for /playerstats."""
+
+    def __init__(self, player: dict, season_blocks: list[dict]):
+        super().__init__(timeout=180)
+        self.player = player
+        self.season_blocks = season_blocks
+        self.page = 0
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        self.prev_button.disabled = self.page == 0
+        self.next_button.disabled = self.page >= len(self.season_blocks) - 1
+
+    def build_embed(self) -> discord.Embed:
+        return build_season_stats_embed(
+            self.player,
+            self.season_blocks[self.page],
+            self.page,
+            len(self.season_blocks),
+        )
+
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page -= 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page += 1
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+
 class GameLogView(discord.ui.View):
     def __init__(self, player: dict, entries: list[dict]):
         super().__init__(timeout=180)
@@ -1010,7 +1045,12 @@ async def playerstats(interaction: discord.Interaction, name: str):
         await interaction.followup.send(f"No player found for `{name}`.")
         return
 
-    await interaction.followup.send(embed=build_player_stats_embed(profile))
+    season_blocks = extract_season_stat_blocks(profile.get("_raw_profile") or {})
+    if len(season_blocks) > 1:
+        view = PlayerStatsView(profile, season_blocks)
+        await interaction.followup.send(embed=view.build_embed(), view=view)
+    else:
+        await interaction.followup.send(embed=build_player_stats_embed(profile))
 
 
 @bot.tree.command(name="gamelog", description="Search a player by name and show game log")

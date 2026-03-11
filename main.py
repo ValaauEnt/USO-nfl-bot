@@ -954,55 +954,36 @@ class GameLogView(discord.ui.View):
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
-def extract_season_stat_blocks(profile: dict) -> list[dict]:
-    """Pull season-by-season stat blocks from the raw ESPN athlete profile response."""
+def extract_season_stat_blocks(gamelog: dict) -> list[dict]:
+    """Build season stat blocks from the raw ESPN gamelog response."""
     seasons = []
 
-    if isinstance(profile, dict):
-        for key in ["seasons", "seasonStats", "splits", "statistics"]:
-            value = profile.get(key)
-            if isinstance(value, list) and value:
-                for item in value:
-                    season_label = (
-                        item.get("displayName")
-                        or item.get("season")
-                        or item.get("name")
-                        or "Season"
-                    )
-                    stats_list = item.get("stats", [])
-                    lines = []
-                    if isinstance(stats_list, list):
-                        for stat in stats_list[:20]:
-                            if isinstance(stat, dict):
-                                n = stat.get("displayName") or stat.get("name")
-                                v = stat.get("displayValue") or stat.get("value")
-                                if n and v is not None:
-                                    lines.append(f"{n}: {v}")
-                    if lines:
-                        seasons.append({
-                            "label": str(season_label),
-                            "sections": [{"title": item.get("displayName") or "Stats", "lines": lines[:12]}]
-                        })
-                if seasons:
-                    break
+    if not isinstance(gamelog, dict):
+        return seasons
 
-    if not seasons:
-        stats_sections = profile.get("statistics", []) or profile.get("stats", [])
-        if stats_sections:
-            section_blocks = []
-            for section in stats_sections[:6]:
-                label = section.get("displayName") or section.get("name") or "Stats"
-                lines = []
-                for stat in section.get("stats", [])[:10]:
-                    if isinstance(stat, dict):
-                        n = stat.get("displayName") or stat.get("name")
-                        v = stat.get("displayValue") or stat.get("value")
-                        if n and v is not None:
-                            lines.append(f"{n}: {v}")
-                if lines:
-                    section_blocks.append({"title": label, "lines": lines})
-            if section_blocks:
-                seasons.append({"label": "Current Season", "sections": section_blocks})
+    col_headers = gamelog.get("displayNames") or gamelog.get("labels") or []
+
+    for season_type in gamelog.get("seasonTypes", []):
+        season_label = season_type.get("displayName", "Season")
+        sections = []
+
+        for category in season_type.get("categories", []):
+            cat_name = category.get("displayName", "Stats")
+            totals = category.get("totals", [])
+
+            if not totals:
+                continue
+
+            lines = []
+            for i, val in enumerate(totals):
+                if i < len(col_headers) and str(val).strip():
+                    lines.append(f"{col_headers[i]}: {val}")
+
+            if lines:
+                sections.append({"title": cat_name, "lines": lines[:20]})
+
+        if sections:
+            seasons.append({"label": season_label, "sections": sections})
 
     return seasons
 
@@ -1297,7 +1278,7 @@ async def playerstats(interaction: discord.Interaction, name: str):
         await interaction.followup.send(f"No player found for `{name}`.")
         return
 
-    season_blocks = extract_season_stat_blocks(profile.get("_raw_profile") or {})
+    season_blocks = extract_season_stat_blocks(profile.get("_raw_gamelog") or {})
     if len(season_blocks) > 1:
         view = PlayerStatsView(profile, season_blocks)
         await interaction.followup.send(embed=view.build_embed(), view=view)
@@ -1332,7 +1313,7 @@ async def seasonstats(interaction: discord.Interaction, name: str):
         await interaction.followup.send(f"No player found for `{name}`.")
         return
 
-    season_blocks = extract_season_stat_blocks(profile.get("_raw_profile") or {})
+    season_blocks = extract_season_stat_blocks(profile.get("_raw_gamelog") or {})
     if not season_blocks:
         await interaction.followup.send(
             f"No season stats available for **{profile['name']}**. Try `/playerstats` instead."

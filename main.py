@@ -18,7 +18,12 @@ ALERTS_CHANNEL_ID = 0
 ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 ESPN_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news"
 ESPN_SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={event_id}"
-ESPN_ATHLETES_URL = "https://sports.core.api.espn.com/v3/sports/football/nfl/athletes?limit=20000&active=true"
+ESPN_TEAM_ROSTER_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team}/roster"
+
+# ESPN uses different URL slugs for some teams
+ROSTER_SLUGS = {
+    "WAS": "wsh",
+}
 ESPN_ATHLETE_PROFILE_URL = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}"
 ESPN_ATHLETE_GAMELOG_URL = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}/gamelog"
 
@@ -280,42 +285,62 @@ async def get_trade_tracker_sections(limit: int = 12) -> dict:
     return sections
 
 
+async def _fetch_team_roster(team_abbr: str) -> list[dict]:
+    slug = ROSTER_SLUGS.get(team_abbr, team_abbr.lower())
+    url = ESPN_TEAM_ROSTER_URL.format(team=slug)
+    try:
+        data = await fetch_json(url)
+    except Exception:
+        return []
+
+    team_logo = TEAM_LOGOS.get(team_abbr, "")
+    players = []
+
+    for group in data.get("athletes", []):
+        for item in group.get("items", []):
+            athlete_id = str(item.get("id", ""))
+            display_name = item.get("displayName") or item.get("fullName")
+            if not athlete_id or not display_name:
+                continue
+
+            position = item.get("position", {}).get("abbreviation", "UNK")
+            jersey = item.get("jersey", "")
+            headshot = f"https://a.espncdn.com/i/headshots/nfl/players/full/{athlete_id}.png"
+
+            players.append({
+                "id": athlete_id,
+                "name": display_name,
+                "position": position,
+                "team": team_abbr,
+                "jersey": jersey,
+                "headshot": headshot,
+                "team_logo": team_logo,
+                "search": normalize_name(display_name),
+                "label": f"{display_name} ({team_abbr}, {position})",
+            })
+
+    return players
+
+
 async def build_player_index() -> None:
     global PLAYER_INDEX, PLAYER_LOOKUP
-    data = await fetch_json(ESPN_ATHLETES_URL)
+
+    import asyncio
+    tasks = [_fetch_team_roster(abbr) for abbr in TEAM_NAMES]
+    results = await asyncio.gather(*tasks)
 
     fresh_index = []
     fresh_lookup = {}
+    seen_ids: set[str] = set()
 
-    for item in data.get("items", []):
-        athlete_id = str(item.get("id", ""))
-        display_name = item.get("displayName") or item.get("fullName")
-        if not athlete_id or not display_name:
-            continue
-
-        position = item.get("position", {}).get("abbreviation", "UNK")
-        team = item.get("team", {}).get("abbreviation", "FA")
-        jersey = item.get("jersey", "")
-        headshot = f"https://a.espncdn.com/i/headshots/nfl/players/full/{athlete_id}.png"
-        team_logo = ""
-        logos = item.get("team", {}).get("logos", [])
-        if isinstance(logos, list) and logos:
-            team_logo = logos[0].get("href", "")
-
-        player = {
-            "id": athlete_id,
-            "name": display_name,
-            "position": position,
-            "team": team,
-            "jersey": jersey,
-            "headshot": headshot,
-            "team_logo": team_logo,
-            "search": normalize_name(display_name),
-            "label": f"{display_name} ({team}, {position})",
-        }
-
-        fresh_index.append(player)
-        fresh_lookup[athlete_id] = player
+    for roster in results:
+        for player in roster:
+            pid = player["id"]
+            if pid in seen_ids:
+                continue
+            seen_ids.add(pid)
+            fresh_index.append(player)
+            fresh_lookup[pid] = player
 
     PLAYER_INDEX = fresh_index
     PLAYER_LOOKUP = fresh_lookup

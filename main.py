@@ -714,8 +714,9 @@ def build_news_embed(items: list[dict]) -> discord.Embed:
 
     for item in items[:6]:
         source = item.get("source", "Source")
-        link = f" [🔗]({item['url']})" if item.get("url") else ""
-        value = f"{item.get('description', '')[:180]}{link}\n**Source:** {source}"
+        link = f"[Read Article]({item['url']})" if item.get("url") else ""
+        desc = item.get("description", "")[:180]
+        value = f"{desc}\n{link}\n**Source:** {source}" if link else f"{desc}\n**Source:** {source}"
         embed.add_field(name=item.get("headline", "Headline")[:256], value=value[:1024], inline=False)
 
     return embed
@@ -738,8 +739,9 @@ def build_recent_trades_embed(items: list[dict]) -> discord.Embed:
 
     for item in items[:6]:
         source = item.get("source", "Source")
-        link = f" [🔗]({item['url']})" if item.get("url") else ""
-        text = f"{item.get('description', 'No summary available.')[:220]}{link}\n**Source:** {source}"
+        link = f"[Read Article]({item['url']})" if item.get("url") else ""
+        desc = item.get("description", "No summary available.")[:220]
+        text = f"{desc}\n{link}\n**Source:** {source}" if link else f"{desc}\n**Source:** {source}"
         embed.add_field(name=item.get("headline", "Headline")[:256], value=text[:1024], inline=False)
 
     embed.set_footer(text="USO NFL Bot • Trade/news tracker")
@@ -759,7 +761,7 @@ def build_trade_tracker_embed(sections: dict) -> discord.Embed:
         lines = []
         for item in items[:3]:
             source = item.get("source", "")
-            link = f" [🔗]({item['url']})" if item.get("url") else ""
+            link = f" — [Read]({item['url']})" if item.get("url") else ""
             lines.append(f"• **{item.get('headline','Headline')}**{link} ({source})")
         return "\n".join(lines)
 
@@ -783,7 +785,7 @@ def build_market_watch_embed(sections: dict) -> discord.Embed:
         lines = []
         for item in items[:5]:
             source = item.get("source", "Source")
-            link = f" [🔗]({item['url']})" if item.get("url") else ""
+            link = f" — [Read]({item['url']})" if item.get("url") else ""
             lines.append(f"• **{item['headline']}**{link} ({source})")
         return "\n".join(lines)
 

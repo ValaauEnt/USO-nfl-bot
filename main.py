@@ -101,9 +101,20 @@ TEAM_NAMES = {
     "WAS": "Washington Commanders",
 }
 
-TRADE_KEYWORDS = [
-    "trade", "traded", "acquire", "acquired", "deal", "dealt", "swap", "swapped"
+CONTRACT_KEYWORDS = [
+    "sign", "signed", "signing", "agreement", "deal", "contract",
+    "extension", "extended", "re-sign", "re-signed", "tag", "franchise tag"
 ]
+
+TRADE_KEYWORDS = [
+    "trade", "traded", "acquire", "acquired", "swap", "swapped", "dealt"
+]
+
+OTHER_MOVE_KEYWORDS = [
+    "release", "released", "waive", "waived", "cut", "cuts",
+    "roster", "practice squad", "injured reserve", "ir"
+]
+
 COMPLETED_WORDS = ["acquired", "acquire", "traded", "lands", "gets"]
 RUMOR_WORDS = ["rumor", "rumours", "report", "talks", "discussing", "expected", "pursuing"]
 

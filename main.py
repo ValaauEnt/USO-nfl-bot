@@ -1,4 +1,5 @@
 import os
+import re
 import html
 import aiohttp
 import discord
@@ -28,6 +29,16 @@ ROSTER_SLUGS = {
 }
 ESPN_ATHLETE_PROFILE_URL = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}"
 ESPN_ATHLETE_GAMELOG_URL = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}/gamelog"
+ESPN_LEADERS_URL = "https://sports.core.api.espn.com/v2/sports/football/leagues/nfl/seasons/{year}/types/{stype}/leaders"
+
+_LEADERS_OFFENSE = [
+    "Passing Yards", "Passing Touchdowns", "Quarterback Rating",
+    "Rushing Yards", "Rushing Touchdowns",
+    "Receiving Yards", "Receptions", "Receiving Touchdowns",
+]
+_LEADERS_DEFENSE = [
+    "Total Tackles", "Sacks", "Interceptions", "Passes Defended",
+]
 
 # Fallback pages
 NFL_NEWS_URL = "https://www.nfl.com/news/"
@@ -507,6 +518,81 @@ async def get_player_gamelog(athlete_id: str) -> dict:
         return {}
 
 
+async def get_league_leaders(year: int = 2025, season_type: int = 2) -> dict:
+    """Fetch NFL stat leaders from ESPN core API and resolve player names."""
+    import asyncio
+
+    url = ESPN_LEADERS_URL.format(year=year, stype=season_type)
+    try:
+        data = await fetch_json(url)
+    except Exception:
+        return {"offense": {}, "defense": {}, "year": year}
+
+    all_want = set(_LEADERS_OFFENSE + _LEADERS_DEFENSE)
+    cat_data: dict[str, list[dict]] = {}
+    needed_ids: set[str] = set()
+
+    for cat in data.get("categories", []):
+        cat_name = cat.get("displayName", "")
+        if cat_name not in all_want:
+            continue
+        entries = []
+        for leader in cat.get("leaders", [])[:5]:
+            ref = leader.get("athlete", {}).get("$ref", "")
+            m = re.search(r"/athletes/(\d+)", ref)
+            if m:
+                aid = m.group(1)
+                needed_ids.add(aid)
+                entries.append({"id": aid, "value": leader.get("displayValue", "")})
+        if entries:
+            cat_data[cat_name] = entries
+
+    name_map: dict[str, dict] = {}
+    missing_ids = []
+    for aid in needed_ids:
+        p = PLAYER_LOOKUP.get(aid)
+        if p:
+            name_map[aid] = {"name": p["name"], "team": p.get("team", "")}
+        else:
+            missing_ids.append(aid)
+
+    if missing_ids:
+        async def _fetch_ath(aid: str):
+            ath_url = (
+                f"https://sports.core.api.espn.com/v2/sports/football/leagues/nfl"
+                f"/seasons/{year}/athletes/{aid}?lang=en&region=us"
+            )
+            try:
+                d = await fetch_json(ath_url)
+                short = d.get("shortName") or d.get("displayName") or "Unknown"
+                return aid, short
+            except Exception:
+                return aid, "Unknown"
+
+        resolved = await asyncio.gather(*[_fetch_ath(aid) for aid in missing_ids])
+        for aid, name in resolved:
+            name_map[aid] = {"name": name, "team": ""}
+
+    offense: dict[str, list] = {}
+    defense: dict[str, list] = {}
+
+    for cat_name, entries in cat_data.items():
+        players = []
+        for e in entries:
+            info = name_map.get(e["id"], {})
+            players.append({
+                "name": info.get("name", "Unknown"),
+                "team": info.get("team", ""),
+                "value": e["value"],
+            })
+        if cat_name in _LEADERS_OFFENSE:
+            offense[cat_name] = players
+        else:
+            defense[cat_name] = players
+
+    return {"offense": offense, "defense": defense, "year": year}
+
+
 def extract_stats_from_profile(profile: dict) -> list[dict]:
     """Pull season stat sections out of the ESPN athlete profile response."""
     stats = []
@@ -796,6 +882,60 @@ def build_market_watch_embed(sections: dict) -> discord.Embed:
     embed.add_field(name="📝 Other Moves", value=format_block(sections["other"]), inline=False)
     embed.set_footer(text="USO NFL Bot • Live market watch")
     return embed
+
+
+def build_leaders_embed(data: dict, mode: str) -> discord.Embed:
+    year = data.get("year", 2025)
+    if mode == "offense":
+        title = f"🏈 NFL Offensive Leaders — {year}"
+        cat_order = _LEADERS_OFFENSE
+        groups = data.get("offense", {})
+    else:
+        title = f"🛡️ NFL Defensive Leaders — {year}"
+        cat_order = _LEADERS_DEFENSE
+        groups = data.get("defense", {})
+
+    embed = discord.Embed(title=title, color=0x7A5C2E)
+
+    for cat in cat_order:
+        players = groups.get(cat, [])
+        if not players:
+            continue
+        lines = []
+        for i, p in enumerate(players, 1):
+            team_str = f" ({p['team']})" if p.get("team") else ""
+            lines.append(f"{i}. **{p['name']}**{team_str} — {p['value']}")
+        embed.add_field(name=cat, value="\n".join(lines), inline=True)
+
+    if not any(groups.get(c) for c in cat_order):
+        embed.description = "No stats available right now."
+
+    embed.set_footer(text="USO NFL Bot • ESPN")
+    return embed
+
+
+class LeagueLeadersView(discord.ui.View):
+    def __init__(self, data: dict):
+        super().__init__(timeout=180)
+        self.data = data
+        self.mode = "offense"
+
+    def build_embed(self) -> discord.Embed:
+        return build_leaders_embed(self.data, self.mode)
+
+    @discord.ui.button(label="🏈 Offense", style=discord.ButtonStyle.primary, row=0)
+    async def offense_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.mode = "offense"
+        self.offense_btn.style = discord.ButtonStyle.primary
+        self.defense_btn.style = discord.ButtonStyle.secondary
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="🛡️ Defense", style=discord.ButtonStyle.secondary, row=0)
+    async def defense_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.mode = "defense"
+        self.offense_btn.style = discord.ButtonStyle.secondary
+        self.defense_btn.style = discord.ButtonStyle.primary
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
 def build_game_stats_embed(game_name: str, summary: dict) -> discord.Embed:
@@ -1351,6 +1491,14 @@ async def nflwatch(interaction: discord.Interaction):
     sections = await get_market_watch_sections()
     embed = build_market_watch_embed(sections)
     await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="leagueleaders", description="Show NFL stat leaders for offense and defense")
+async def leagueleaders(interaction: discord.Interaction):
+    await interaction.response.defer()
+    data = await get_league_leaders()
+    view = LeagueLeadersView(data)
+    await interaction.followup.send(embed=view.build_embed(), view=view)
 
 
 @bot.event

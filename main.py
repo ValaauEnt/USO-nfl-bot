@@ -142,10 +142,17 @@ async def fetch_text(url: str) -> str:
         return await resp.text()
 
 
-async def get_live_scoreboard() -> list[dict]:
-    data = await fetch_json(ESPN_SCOREBOARD_URL)
-    games = []
+PLAYOFF_WEEK_LABELS = {
+    1: "Wild Card",
+    2: "Divisional Round",
+    3: "Conference Championship",
+    4: "Pro Bowl",
+    5: "Super Bowl",
+}
 
+
+def _parse_games(data: dict) -> list[dict]:
+    games = []
     for event in data.get("events", []):
         competition = event.get("competitions", [{}])[0]
         competitors = competition.get("competitors", [])
@@ -157,19 +164,91 @@ async def get_live_scoreboard() -> list[dict]:
         status_type = status.get("type", {})
         situation = competition.get("situation", {})
 
+        # Determine winner for finished games
+        away_rec = away.get("records", [{}])[0].get("summary", "") if away.get("records") else ""
+        home_rec = home.get("records", [{}])[0].get("summary", "") if home.get("records") else ""
+
         games.append({
             "id": event.get("id"),
             "name": event.get("shortName", event.get("name", "NFL Game")),
             "away_team": away.get("team", {}).get("abbreviation", "AWAY"),
+            "away_name": away.get("team", {}).get("displayName", "Away"),
             "home_team": home.get("team", {}).get("abbreviation", "HOME"),
+            "home_name": home.get("team", {}).get("displayName", "Home"),
             "away_score": away.get("score", "0"),
             "home_score": home.get("score", "0"),
-            "state": status_type.get("shortDetail", "Status unavailable"),
+            "away_winner": away.get("winner", False),
+            "home_winner": home.get("winner", False),
+            "away_record": away_rec,
+            "home_record": home_rec,
+            "state": status_type.get("shortDetail", "TBD"),
             "completed": status_type.get("completed", False),
+            "in_progress": status_type.get("name", "") == "STATUS_IN_PROGRESS",
             "possession": situation.get("possession"),
             "down_distance": situation.get("downDistanceText", ""),
         })
+    return games
 
+
+async def get_scoreboard_data(
+    week: int | None = None,
+    season_type: int | None = None,
+    year: int | None = None,
+) -> tuple[list[dict], dict]:
+    """
+    Fetch NFL scores for a given week/season.
+    Returns (games, meta) where meta contains season context.
+    season_type: 1=preseason, 2=regular, 3=postseason
+    """
+    params = []
+    if year is not None:
+        params.append(f"year={year}")
+    if season_type is not None:
+        params.append(f"seasontype={season_type}")
+    if week is not None:
+        params.append(f"week={week}")
+
+    url = ESPN_SCOREBOARD_URL + ("?" + "&".join(params) if params else "")
+    data = await fetch_json(url)
+
+    season = data.get("season", {})
+    week_data = data.get("week", {})
+
+    actual_type = season.get("type", season_type or 2)
+    actual_year = season.get("year", year or datetime.now().year)
+    actual_week = week_data.get("number", week or 1)
+
+    if actual_type == 1:
+        type_name = "Preseason"
+        max_week = 4
+    elif actual_type == 3:
+        type_name = "Playoffs"
+        max_week = 5
+    else:
+        type_name = "Regular Season"
+        max_week = 18
+
+    if actual_type == 3:
+        week_label = PLAYOFF_WEEK_LABELS.get(actual_week, f"Playoff Week {actual_week}")
+    else:
+        week_label = f"Week {actual_week}"
+
+    meta = {
+        "year": actual_year,
+        "season_type": actual_type,
+        "type_name": type_name,
+        "week": actual_week,
+        "week_label": week_label,
+        "max_week": max_week,
+        "display": f"{type_name} • {week_label} • {actual_year - 1}/{actual_year}",
+    }
+
+    return _parse_games(data), meta
+
+
+async def get_live_scoreboard() -> list[dict]:
+    """Kept for the auto-post loop — fetches current week only."""
+    games, _ = await get_scoreboard_data()
     return games
 
 
@@ -519,39 +598,60 @@ async def fetch_full_player_profile(name: str) -> dict | None:
     return merged
 
 
-def build_scoreboard_embed(games: list[dict]) -> discord.Embed:
-    embed = discord.Embed(
-        title="🏈 NFL LIVE SCOREBOARD",
-        description=f"Current week scores • Updated {datetime.now().strftime('%b %d, %Y • %I:%M %p')}",
-        color=0x7A5C2E,
-    )
+def build_scoreboard_embed(games: list[dict], meta: dict | None = None) -> discord.Embed:
+    if meta:
+        title = f"🏈 NFL Scoreboard — {meta['week_label']}"
+        description = f"**{meta['type_name']} • {meta['year'] - 1}/{meta['year']} Season**\nUpdated {datetime.now().strftime('%b %d, %Y • %I:%M %p')}"
+    else:
+        title = "🏈 NFL Scoreboard"
+        description = f"Updated {datetime.now().strftime('%b %d, %Y • %I:%M %p')}"
+
+    embed = discord.Embed(title=title, description=description, color=0x7A5C2E)
 
     if not games:
         embed.add_field(
             name="No Games Found",
-            value="No live or scheduled NFL games found for the current week.",
-            inline=False
+            value="No games found for this week. Use the buttons to browse other weeks.",
+            inline=False,
         )
         return embed
 
+    any_live = any(g.get("in_progress") for g in games)
+
     for game in games[:16]:
-        extra = ""
-        if game.get("possession"):
-            extra += f"\nPossession: **{game['possession']}**"
-        if game.get("down_distance"):
-            extra += f"\n{game['down_distance']}"
+        away = game["away_team"]
+        home = game["home_team"]
+        a_score = game["away_score"]
+        h_score = game["home_score"]
+        state = game["state"]
 
-        embed.add_field(
-            name=f"{game['away_team']} @ {game['home_team']}",
-            value=f"**{game['away_score']} - {game['home_score']}**\n{game['state']}{extra}",
-            inline=False,
-        )
+        # Bold the winning team's score when the game is final
+        if game.get("completed"):
+            if game.get("away_winner"):
+                score_line = f"**{away} {a_score}** — {home} {h_score}"
+            elif game.get("home_winner"):
+                score_line = f"{away} {a_score} — **{home} {h_score}**"
+            else:
+                score_line = f"{away} {a_score} — {home} {h_score}"
+        else:
+            score_line = f"{away} {a_score} — {home} {h_score}"
 
-    first_logo = TEAM_LOGOS.get(games[0]["away_team"])
-    if first_logo:
-        embed.set_thumbnail(url=first_logo)
+        extra = f"\n{state}"
+        if game.get("in_progress"):
+            if game.get("down_distance"):
+                extra += f"  •  {game['down_distance']}"
 
-    embed.set_footer(text="USO NFL Bot • Live current week scoreboard")
+        rec_away = f" ({game['away_record']})" if game.get("away_record") else ""
+        rec_home = f" ({game['home_record']})" if game.get("home_record") else ""
+        field_name = f"{away}{rec_away} @ {home}{rec_home}"
+
+        embed.add_field(name=field_name[:256], value=(score_line + extra)[:1024], inline=False)
+
+    if any_live:
+        embed.set_footer(text="🔴 LIVE • USO NFL Bot")
+    else:
+        embed.set_footer(text="USO NFL Bot")
+
     return embed
 
 
@@ -932,6 +1032,64 @@ class SeasonStatsView(discord.ui.View):
         return embed
 
 
+class ScoreboardView(discord.ui.View):
+    """Week-by-week scoreboard with Prev/Next and Regular Season/Playoffs toggles."""
+
+    def __init__(self, games: list[dict], meta: dict):
+        super().__init__(timeout=300)
+        self.games = games
+        self.meta = meta
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        self.prev_button.disabled = self.meta["week"] <= 1
+        self.next_button.disabled = self.meta["week"] >= self.meta["max_week"]
+        self.reg_button.style = (
+            discord.ButtonStyle.primary if self.meta["season_type"] == 2
+            else discord.ButtonStyle.secondary
+        )
+        self.playoff_button.style = (
+            discord.ButtonStyle.primary if self.meta["season_type"] == 3
+            else discord.ButtonStyle.secondary
+        )
+
+    def build_embed(self) -> discord.Embed:
+        return build_scoreboard_embed(self.games, self.meta)
+
+    async def _fetch_and_update(self, interaction: discord.Interaction):
+        self.games, self.meta = await get_scoreboard_data(
+            week=self.meta["week"],
+            season_type=self.meta["season_type"],
+            year=self.meta["year"],
+        )
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="◀ Prev Week", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.meta["week"] -= 1
+        await self._fetch_and_update(interaction)
+
+    @discord.ui.button(label="Next Week ▶", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.meta["week"] += 1
+        await self._fetch_and_update(interaction)
+
+    @discord.ui.button(label="Regular Season", style=discord.ButtonStyle.primary, row=1)
+    async def reg_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.meta["season_type"] = 2
+        self.meta["week"] = 18
+        self.meta["max_week"] = 18
+        await self._fetch_and_update(interaction)
+
+    @discord.ui.button(label="Playoffs", style=discord.ButtonStyle.secondary, row=1)
+    async def playoff_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.meta["season_type"] = 3
+        self.meta["week"] = 5
+        self.meta["max_week"] = 5
+        await self._fetch_and_update(interaction)
+
+
 async def player_name_autocomplete(
     interaction: discord.Interaction,
     current: str
@@ -1009,12 +1167,12 @@ async def news_loop():
     )
 
 
-@bot.tree.command(name="scoreboard", description="Show all live NFL scores for the current week")
+@bot.tree.command(name="scoreboard", description="Show NFL scores — browse past weeks, current week, and live games")
 async def scoreboard(interaction: discord.Interaction):
     await interaction.response.defer()
-    games = await get_live_scoreboard()
-    embed = build_scoreboard_embed(games)
-    await interaction.followup.send(embed=embed)
+    games, meta = await get_scoreboard_data()
+    view = ScoreboardView(games, meta)
+    await interaction.followup.send(embed=view.build_embed(), view=view)
 
 
 @bot.tree.command(name="gamestats", description="Show stat leaders for a live game")

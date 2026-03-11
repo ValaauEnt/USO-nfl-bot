@@ -954,6 +954,189 @@ async def tradetracker(interaction: discord.Interaction):
     await interaction.followup.send(embed=build_trade_tracker_embed(sections))
 
 
+async def call_openai(system_prompt: str, user_prompt: str, max_tokens: int = 600) -> str:
+    if not openai_client:
+        return "OpenAI is not configured. Add OPENAI_API_KEY to Replit Secrets."
+
+    def _call():
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.7,
+        )
+        return response.choices[0].message.content.strip()
+
+    import asyncio
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, _call)
+    except Exception as e:
+        return f"AI error: {e}"
+
+
+@bot.tree.command(name="ask", description="Ask the AI any NFL question")
+@app_commands.describe(question="Your NFL question")
+async def ask(interaction: discord.Interaction, question: str):
+    await interaction.response.defer()
+
+    answer = await call_openai(
+        system_prompt=(
+            "You are an expert NFL analyst and historian. Answer questions about the NFL "
+            "accurately and concisely. Use stats, context, and analysis where helpful. "
+            "Keep answers under 400 words."
+        ),
+        user_prompt=question,
+    )
+
+    embed = discord.Embed(
+        title="🤖 NFL AI Assistant",
+        color=0x7A5C2E,
+    )
+    embed.add_field(name=f"Q: {question[:200]}", value=answer[:1024], inline=False)
+    embed.set_footer(text="USO NFL Bot • Powered by OpenAI")
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="analyze", description="Get an AI analysis of an NFL player")
+@app_commands.describe(name="Start typing a player name")
+@app_commands.autocomplete(name=player_name_autocomplete)
+async def analyze(interaction: discord.Interaction, name: str):
+    await interaction.response.defer()
+
+    player = resolve_player_by_name(name)
+    if player is None:
+        await interaction.followup.send(f"No player found for `{name}`.")
+        return
+
+    overview = await get_player_overview(player["id"])
+    enriched = await enrich_player_profile_with_ai(player, overview)
+
+    stats_lines = []
+    statistics = overview.get("statistics", []) or overview.get("stats", [])
+    for section in statistics[:4]:
+        label = section.get("displayName") or section.get("name") or "Stats"
+        for stat in section.get("stats", [])[:5]:
+            if isinstance(stat, dict):
+                sn = stat.get("displayName") or stat.get("name")
+                sv = stat.get("displayValue") or stat.get("value")
+                if sn and sv is not None:
+                    stats_lines.append(f"{sn}: {sv}")
+
+    stats_text = "\n".join(stats_lines) if stats_lines else "No detailed stats available."
+    team_display = TEAM_NAMES.get(enriched["team"], enriched["team"])
+
+    analysis = await call_openai(
+        system_prompt=(
+            "You are an expert NFL scout and analyst. Given a player's profile and stats, "
+            "provide a sharp, insightful analysis covering their strengths, weaknesses, "
+            "current role, and outlook. Be specific and concise. Under 350 words."
+        ),
+        user_prompt=(
+            f"Player: {enriched['name']}\n"
+            f"Team: {team_display}\n"
+            f"Position: {enriched['position']}\n"
+            f"Jersey: {enriched.get('jersey', 'N/A')}\n\n"
+            f"Stats:\n{stats_text}"
+        ),
+    )
+
+    embed = discord.Embed(
+        title=f"🧠 AI Analysis: {enriched['name']}",
+        description=f"**{team_display}** • {enriched['position']}",
+        color=0x7A5C2E,
+    )
+    if enriched.get("headshot"):
+        embed.set_thumbnail(url=enriched["headshot"])
+    elif TEAM_LOGOS.get(enriched["team"]):
+        embed.set_thumbnail(url=TEAM_LOGOS[enriched["team"]])
+
+    embed.add_field(name="Analysis", value=analysis[:1024], inline=False)
+    embed.set_footer(text="USO NFL Bot • Powered by OpenAI")
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="preview", description="Get an AI matchup preview between two teams")
+@app_commands.describe(
+    team1="First team abbreviation (e.g. KC)",
+    team2="Second team abbreviation (e.g. SF)"
+)
+async def preview(interaction: discord.Interaction, team1: str, team2: str):
+    await interaction.response.defer()
+
+    t1 = team1.upper().strip()
+    t2 = team2.upper().strip()
+
+    t1_name = TEAM_NAMES.get(t1, t1)
+    t2_name = TEAM_NAMES.get(t2, t2)
+
+    if t1 not in TEAM_NAMES and t2 not in TEAM_NAMES:
+        await interaction.followup.send(f"Could not recognize teams `{t1}` or `{t2}`. Use abbreviations like KC, DAL, SF.")
+        return
+
+    result = await call_openai(
+        system_prompt=(
+            "You are an expert NFL analyst. Provide an engaging, detailed matchup preview "
+            "covering key players, strengths, weaknesses, historical rivalry context, and "
+            "a prediction with reasoning. Under 400 words."
+        ),
+        user_prompt=f"Preview the NFL matchup: {t1_name} vs {t2_name}",
+        max_tokens=700,
+    )
+
+    embed = discord.Embed(
+        title=f"🏈 Matchup Preview",
+        description=f"**{t1_name}** vs **{t2_name}**",
+        color=0x7A5C2E,
+    )
+
+    logo1 = TEAM_LOGOS.get(t1)
+    if logo1:
+        embed.set_thumbnail(url=logo1)
+
+    embed.add_field(name="AI Preview", value=result[:1024], inline=False)
+    embed.set_footer(text="USO NFL Bot • Powered by OpenAI")
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="newsummary", description="Get an AI summary of today's top NFL news")
+async def newsummary(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    items = await get_news_items(limit=8)
+    if not items:
+        await interaction.followup.send("No news available to summarize right now.")
+        return
+
+    headlines_text = "\n".join(
+        f"- {item.get('headline', '')} — {item.get('description', '')[:120]}"
+        for item in items
+    )
+
+    summary = await call_openai(
+        system_prompt=(
+            "You are an NFL news analyst. Given a list of NFL headlines and descriptions, "
+            "write a concise, engaging daily news summary covering the biggest stories. "
+            "Group related topics, highlight the most important developments, and keep it "
+            "under 350 words."
+        ),
+        user_prompt=f"Today's NFL headlines:\n{headlines_text}",
+        max_tokens=600,
+    )
+
+    embed = discord.Embed(
+        title="📋 AI NFL News Summary",
+        description=f"Top stories for {datetime.now().strftime('%B %d, %Y')}",
+        color=0x7A5C2E,
+    )
+    embed.add_field(name="Summary", value=summary[:1024], inline=False)
+    embed.set_footer(text="USO NFL Bot • Powered by OpenAI")
+    await interaction.followup.send(embed=embed)
+
+
 @bot.event
 async def on_ready():
     global session

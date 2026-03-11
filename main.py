@@ -1,6 +1,4 @@
 import os
-import re
-import json
 import html
 import aiohttp
 import discord
@@ -8,10 +6,8 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from datetime import datetime
 from bs4 import BeautifulSoup
-from openai import OpenAI
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Optional auto-post channels. Leave as 0 if unused.
 SCORES_CHANNEL_ID = 0
@@ -29,8 +25,6 @@ ESPN_ATHLETE_GAMELOG_URL = "https://site.web.api.espn.com/apis/common/v3/sports/
 # Fallback pages
 NFL_NEWS_URL = "https://www.nfl.com/news/"
 YAHOO_NFL_NEWS_URL = "https://sports.yahoo.com/nfl/news/"
-NFL_SEARCH_URL = "https://www.nfl.com/search/?query={query}"
-YAHOO_SEARCH_URL = "https://sports.yahoo.com/search/?fr=sycsrp_catchall&type=2button&p={query}"
 
 TEAM_LOGOS = {
     "ARI": "https://a.espncdn.com/i/teamlogos/nfl/500/ari.png",
@@ -112,7 +106,6 @@ intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 session: aiohttp.ClientSession | None = None
-openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 scores_message_id: int | None = None
 news_message_id: int | None = None
@@ -497,153 +490,6 @@ async def fetch_full_player_profile(name: str) -> dict | None:
     merged["_gamelog_entries"] = extract_stats_from_gamelog(gamelog_data)
     merged["_raw_profile"] = profile_data
     merged["_raw_gamelog"] = gamelog_data
-
-    return merged
-
-
-def profile_is_complete(player: dict) -> bool:
-    return bool(
-        player.get("team")
-        and player.get("team") not in ("FA", "UNK")
-        and player.get("position")
-        and player.get("position") != "UNK"
-        and player.get("headshot")
-    )
-
-
-async def scrape_candidate_profile_pages(player_name: str, limit: int = 2) -> list[str]:
-    candidates = []
-
-    nfl_search = NFL_SEARCH_URL.format(query=player_name.replace(" ", "%20"))
-    yahoo_search = YAHOO_SEARCH_URL.format(query=player_name.replace(" ", "+"))
-
-    for url in [nfl_search, yahoo_search]:
-        try:
-            text = await fetch_text(url)
-            soup = BeautifulSoup(text, "html.parser")
-            snippets = []
-
-            title = soup.title.get_text(" ", strip=True) if soup.title else ""
-            if title:
-                snippets.append(title)
-
-            meta_desc = soup.find("meta", attrs={"name": "description"})
-            if meta_desc and meta_desc.get("content"):
-                snippets.append(meta_desc["content"])
-
-            og_desc = soup.find("meta", attrs={"property": "og:description"})
-            if og_desc and og_desc.get("content"):
-                snippets.append(og_desc["content"])
-
-            body_text = soup.get_text(" ", strip=True)
-            body_text = re.sub(r"\s+", " ", body_text)
-            if body_text:
-                snippets.append(body_text[:5000])
-
-            combined = "\n\n".join(snippets).strip()
-            if combined:
-                candidates.append(combined)
-
-            if len(candidates) >= limit:
-                break
-        except Exception:
-            continue
-
-    return candidates
-
-
-async def ai_extract_player_profile(player_name: str, page_texts: list[str]) -> dict:
-    if not openai_client or not page_texts:
-        return {}
-
-    combined = "\n\n---\n\n".join(page_texts[:2])
-
-    def _call():
-        response = openai_client.responses.create(
-            model="gpt-4o",
-            input=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Extract NFL player profile data from source text. "
-                        "Do not guess. If a field is missing or uncertain, return null. "
-                        "Return only structured data matching the schema."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Player name: {player_name}\n\nSource text:\n{combined}",
-                },
-            ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "player_profile",
-                    "schema": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            "name": {"type": ["string", "null"]},
-                            "team": {"type": ["string", "null"]},
-                            "position": {"type": ["string", "null"]},
-                            "jersey": {"type": ["string", "null"]},
-                            "headshot": {"type": ["string", "null"]},
-                        },
-                        "required": ["name", "team", "position", "jersey", "headshot"],
-                    },
-                }
-            },
-        )
-        return json.loads(response.output_text)
-
-    import asyncio
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(None, _call)
-    except Exception:
-        return {}
-
-
-def normalize_team_value(team: str | None) -> str | None:
-    if not team:
-        return None
-    team = team.strip()
-
-    if team.upper() in TEAM_NAMES:
-        return team.upper()
-
-    for abbr, full_name in TEAM_NAMES.items():
-        if team.lower() == full_name.lower():
-            return abbr
-
-    return team
-
-
-async def enrich_player_profile_with_ai(player: dict, overview: dict) -> dict:
-    merged = merge_player_profile(player, overview)
-
-    if profile_is_complete(merged):
-        return merged
-
-    page_texts = await scrape_candidate_profile_pages(player["name"])
-    extracted = await ai_extract_player_profile(player["name"], page_texts)
-
-    if extracted:
-        team_val = normalize_team_value(extracted.get("team"))
-        if (not merged.get("team") or merged.get("team") in ("FA", "UNK")) and team_val:
-            merged["team"] = team_val
-
-        if (not merged.get("position") or merged.get("position") == "UNK") and extracted.get("position"):
-            merged["position"] = extracted["position"]
-
-        if not merged.get("jersey") and extracted.get("jersey"):
-            merged["jersey"] = extracted["jersey"]
-
-        if not merged.get("headshot") and extracted.get("headshot"):
-            merged["headshot"] = extracted["headshot"]
-
-        if extracted.get("team") or extracted.get("position") or extracted.get("jersey") or extracted.get("headshot"):
-            merged["profile_source"] = "AI extracted from fallback pages"
 
     return merged
 
@@ -1055,185 +901,6 @@ async def tradetracker(interaction: discord.Interaction):
     await interaction.response.defer()
     sections = await get_trade_tracker_sections()
     await interaction.followup.send(embed=build_trade_tracker_embed(sections))
-
-
-async def call_openai(system_prompt: str, user_prompt: str, max_tokens: int = 600) -> str:
-    if not openai_client:
-        return "OpenAI is not configured. Add OPENAI_API_KEY to Replit Secrets."
-
-    def _call():
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=max_tokens,
-            temperature=0.7,
-        )
-        return response.choices[0].message.content.strip()
-
-    import asyncio
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(None, _call)
-    except Exception as e:
-        return f"AI error: {e}"
-
-
-@bot.tree.command(name="ask", description="Ask the AI any NFL question")
-@app_commands.describe(question="Your NFL question")
-async def ask(interaction: discord.Interaction, question: str):
-    await interaction.response.defer()
-
-    answer = await call_openai(
-        system_prompt=(
-            "You are an expert NFL analyst and historian. Answer questions about the NFL "
-            "accurately and concisely. Use stats, context, and analysis where helpful. "
-            "Keep answers under 400 words."
-        ),
-        user_prompt=question,
-    )
-
-    embed = discord.Embed(
-        title="🤖 NFL AI Assistant",
-        color=0x7A5C2E,
-    )
-    embed.add_field(name=f"Q: {question[:200]}", value=answer[:1024], inline=False)
-    embed.set_footer(text="USO NFL Bot • Powered by OpenAI")
-    await interaction.followup.send(embed=embed)
-
-
-@bot.tree.command(name="analyze", description="Get an AI analysis of an NFL player")
-@app_commands.describe(name="Start typing a player name")
-@app_commands.autocomplete(name=player_name_autocomplete)
-async def analyze(interaction: discord.Interaction, name: str):
-    await interaction.response.defer()
-
-    profile = await fetch_full_player_profile(name)
-    if profile is None:
-        await interaction.followup.send(f"No player found for `{name}`.")
-        return
-
-    stats_lines = []
-    for section in (profile.get("stats") or [])[:4]:
-        for stat in section.get("stats", [])[:5]:
-            if isinstance(stat, dict):
-                sn = stat.get("displayName") or stat.get("name")
-                sv = stat.get("displayValue") or stat.get("value")
-                if sn and sv is not None:
-                    stats_lines.append(f"{sn}: {sv}")
-
-    stats_text = "\n".join(stats_lines) if stats_lines else "No detailed stats available."
-    team_display = TEAM_NAMES.get(profile.get("team", ""), profile.get("team", "N/A"))
-    enriched = profile
-
-    analysis = await call_openai(
-        system_prompt=(
-            "You are an expert NFL scout and analyst. Given a player's profile and stats, "
-            "provide a sharp, insightful analysis covering their strengths, weaknesses, "
-            "current role, and outlook. Be specific and concise. Under 350 words."
-        ),
-        user_prompt=(
-            f"Player: {enriched['name']}\n"
-            f"Team: {team_display}\n"
-            f"Position: {enriched['position']}\n"
-            f"Jersey: {enriched.get('jersey', 'N/A')}\n\n"
-            f"Stats:\n{stats_text}"
-        ),
-    )
-
-    embed = discord.Embed(
-        title=f"🧠 AI Analysis: {enriched['name']}",
-        description=f"**{team_display}** • {enriched['position']}",
-        color=0x7A5C2E,
-    )
-    if enriched.get("headshot"):
-        embed.set_thumbnail(url=enriched["headshot"])
-    elif TEAM_LOGOS.get(enriched["team"]):
-        embed.set_thumbnail(url=TEAM_LOGOS[enriched["team"]])
-
-    embed.add_field(name="Analysis", value=analysis[:1024], inline=False)
-    embed.set_footer(text="USO NFL Bot • Powered by OpenAI")
-    await interaction.followup.send(embed=embed)
-
-
-@bot.tree.command(name="preview", description="Get an AI matchup preview between two teams")
-@app_commands.describe(
-    team1="First team abbreviation (e.g. KC)",
-    team2="Second team abbreviation (e.g. SF)"
-)
-async def preview(interaction: discord.Interaction, team1: str, team2: str):
-    await interaction.response.defer()
-
-    t1 = team1.upper().strip()
-    t2 = team2.upper().strip()
-
-    t1_name = TEAM_NAMES.get(t1, t1)
-    t2_name = TEAM_NAMES.get(t2, t2)
-
-    if t1 not in TEAM_NAMES and t2 not in TEAM_NAMES:
-        await interaction.followup.send(f"Could not recognize teams `{t1}` or `{t2}`. Use abbreviations like KC, DAL, SF.")
-        return
-
-    result = await call_openai(
-        system_prompt=(
-            "You are an expert NFL analyst. Provide an engaging, detailed matchup preview "
-            "covering key players, strengths, weaknesses, historical rivalry context, and "
-            "a prediction with reasoning. Under 400 words."
-        ),
-        user_prompt=f"Preview the NFL matchup: {t1_name} vs {t2_name}",
-        max_tokens=700,
-    )
-
-    embed = discord.Embed(
-        title=f"🏈 Matchup Preview",
-        description=f"**{t1_name}** vs **{t2_name}**",
-        color=0x7A5C2E,
-    )
-
-    logo1 = TEAM_LOGOS.get(t1)
-    if logo1:
-        embed.set_thumbnail(url=logo1)
-
-    embed.add_field(name="AI Preview", value=result[:1024], inline=False)
-    embed.set_footer(text="USO NFL Bot • Powered by OpenAI")
-    await interaction.followup.send(embed=embed)
-
-
-@bot.tree.command(name="newsummary", description="Get an AI summary of today's top NFL news")
-async def newsummary(interaction: discord.Interaction):
-    await interaction.response.defer()
-
-    items = await get_news_items(limit=8)
-    if not items:
-        await interaction.followup.send("No news available to summarize right now.")
-        return
-
-    headlines_text = "\n".join(
-        f"- {item.get('headline', '')} — {item.get('description', '')[:120]}"
-        for item in items
-    )
-
-    summary = await call_openai(
-        system_prompt=(
-            "You are an NFL news analyst. Given a list of NFL headlines and descriptions, "
-            "write a concise, engaging daily news summary covering the biggest stories. "
-            "Group related topics, highlight the most important developments, and keep it "
-            "under 350 words."
-        ),
-        user_prompt=f"Today's NFL headlines:\n{headlines_text}",
-        max_tokens=600,
-    )
-
-    embed = discord.Embed(
-        title="📋 AI NFL News Summary",
-        description=f"Top stories for {datetime.now().strftime('%B %d, %Y')}",
-        color=0x7A5C2E,
-    )
-    embed.add_field(name="Summary", value=summary[:1024], inline=False)
-    embed.set_footer(text="USO NFL Bot • Powered by OpenAI")
-    await interaction.followup.send(embed=embed)
 
 
 @bot.event

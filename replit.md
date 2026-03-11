@@ -13,13 +13,11 @@ A Discord bot for tracking live NFL scores, news, player stats, game logs, and t
 - `/tradetracker` — Trade headlines categorized as completed, rumored, or other
 - Auto-post scores and news to configured channels (optional)
 - Score change alerts posted to a configurable alerts channel
-- AI-powered player profile enrichment via OpenAI when ESPN data is incomplete
 
 ## Setup
 
 ### Required Secrets
 - `DISCORD_TOKEN` — Your Discord bot token (required to run)
-- `OPENAI_API_KEY` — Optional. Enables AI fallback for incomplete player profiles
 
 ### Optional Channel IDs (edit main.py)
 Set these to Discord channel IDs to enable auto-posting:
@@ -33,14 +31,13 @@ Set these to Discord channel IDs to enable auto-posting:
 - Data sources: ESPN scoreboard, news, athlete, and summary APIs
 - Fallback scrapers for NFL.com and Yahoo Sports
 - Player index built on startup from ESPN athletes endpoint (~20,000 players)
-- AI enrichment: OpenAI Responses API with structured JSON output to fill missing player profiles
+- Player pipeline: name search → athlete ID → profile + gamelog fetched concurrently → merged result
 
 ## Dependencies
 
 - `discord.py` — Discord bot framework
 - `aiohttp` — Async HTTP client
 - `beautifulsoup4` — HTML scraping for fallback news sources
-- `openai` — Optional AI enrichment for player profiles
 
 ## Running
 

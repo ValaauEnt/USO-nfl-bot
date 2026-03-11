@@ -23,7 +23,7 @@ ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nf
 ESPN_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news"
 ESPN_SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={event_id}"
 ESPN_ATHLETES_URL = "https://sports.core.api.espn.com/v3/sports/football/nfl/athletes?limit=20000&active=true"
-ESPN_ATHLETE_OVERVIEW_URL = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}/overview"
+ESPN_ATHLETE_PROFILE_URL = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}"
 ESPN_ATHLETE_GAMELOG_URL = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}/gamelog"
 
 # Fallback pages
@@ -348,9 +348,9 @@ def resolve_player_by_name(query: str) -> dict | None:
     return exact or matches[0]
 
 
-async def get_player_overview(athlete_id: str) -> dict:
+async def get_player_profile(athlete_id: str) -> dict:
     try:
-        return await fetch_json(ESPN_ATHLETE_OVERVIEW_URL.format(athlete_id=athlete_id))
+        return await fetch_json(ESPN_ATHLETE_PROFILE_URL.format(athlete_id=athlete_id))
     except Exception:
         return {}
 
@@ -362,19 +362,90 @@ async def get_player_gamelog(athlete_id: str) -> dict:
         return {}
 
 
-def merge_player_profile(base_player: dict, overview: dict) -> dict:
+def extract_stats_from_profile(profile: dict) -> list[dict]:
+    """Pull season stat sections out of the ESPN athlete profile response."""
+    stats = []
+    for key in ("statistics", "stats", "splits"):
+        raw = profile.get(key)
+        if isinstance(raw, list) and raw:
+            stats = raw
+            break
+        if isinstance(raw, dict):
+            # some endpoints wrap in {splits: {categories: [...]}}
+            categories = raw.get("categories") or raw.get("splits") or []
+            if isinstance(categories, list) and categories:
+                stats = categories
+                break
+    return stats
+
+
+def extract_stats_from_gamelog(gamelog: dict) -> list[dict]:
+    """Pull per-game stat rows out of the ESPN gamelog response."""
+    entries = []
+    season_types = gamelog.get("seasonTypes") or []
+    for st in season_types:
+        categories = st.get("categories") or []
+        for cat in categories:
+            events = cat.get("events") or []
+            for evt in events:
+                stat_parts = []
+                for s in evt.get("stats", []):
+                    if isinstance(s, dict):
+                        n = s.get("displayName") or s.get("name")
+                        v = s.get("displayValue") or s.get("value")
+                        if n and v is not None:
+                            stat_parts.append(f"{n}: {v}")
+                opponent = evt.get("opponent", {}).get("displayName", "Opponent")
+                date = evt.get("atVs", "") + " " + opponent
+                entries.append({
+                    "title": date.strip(),
+                    "value": " • ".join(stat_parts) if stat_parts else "No stats",
+                })
+
+    # fallback — original flat events list
+    if not entries:
+        for event in gamelog.get("events", []):
+            if not isinstance(event, dict):
+                continue
+            opponent = event.get("opponent", {}).get("displayName", "Opponent")
+            date = event.get("date", "Game")
+            stat_parts = []
+            for s in event.get("stats", []):
+                if isinstance(s, dict):
+                    n = s.get("displayName") or s.get("name")
+                    v = s.get("displayValue") or s.get("value")
+                    if n and v is not None:
+                        stat_parts.append(f"{n}: {v}")
+            entries.append({
+                "title": f"{date} vs {opponent}",
+                "value": " • ".join(stat_parts) if stat_parts else "No stats",
+            })
+
+    if not entries:
+        entries.append({"title": "Game Log", "value": "No game log data available."})
+
+    return entries
+
+
+def merge_player_profile(base_player: dict, profile: dict) -> dict:
+    """Merge ESPN index data with the athlete profile endpoint response."""
     player = dict(base_player)
     player["profile_source"] = "ESPN athlete index"
 
-    # Always use the ESPN headshot CDN URL — most reliable source
+    # Always build headshot from ESPN CDN using athlete ID
     if player.get("id"):
         player["headshot"] = f"https://a.espncdn.com/i/headshots/nfl/players/full/{player['id']}.png"
 
-    athlete = overview.get("athlete", {}) if isinstance(overview, dict) else {}
-    if athlete:
-        team_abbr = athlete.get("team", {}).get("abbreviation")
-        position_abbr = athlete.get("position", {}).get("abbreviation")
+    if not isinstance(profile, dict):
+        return player
+
+    # The profile endpoint wraps athlete data under "athlete"
+    athlete = profile.get("athlete") or profile
+    if isinstance(athlete, dict):
+        team_abbr = (athlete.get("team") or {}).get("abbreviation")
+        position_abbr = (athlete.get("position") or {}).get("abbreviation")
         jersey = athlete.get("jersey")
+        display_name = athlete.get("displayName") or athlete.get("fullName")
 
         if team_abbr:
             player["team"] = team_abbr
@@ -382,17 +453,52 @@ def merge_player_profile(base_player: dict, overview: dict) -> dict:
             player["position"] = position_abbr
         if jersey:
             player["jersey"] = jersey
+        if display_name:
+            player["name"] = display_name
 
-        team_logo = ""
-        logos = athlete.get("team", {}).get("logos", [])
+        logos = (athlete.get("team") or {}).get("logos") or []
         if isinstance(logos, list) and logos:
-            team_logo = logos[0].get("href", "")
-        if team_logo:
-            player["team_logo"] = team_logo
+            player["team_logo"] = logos[0].get("href", "")
 
-        player["profile_source"] = "ESPN overview"
+        player["profile_source"] = "ESPN profile"
+
+    # Attach season stats extracted from the profile
+    player["stats"] = extract_stats_from_profile(profile)
 
     return player
+
+
+async def fetch_full_player_profile(name: str) -> dict | None:
+    """
+    Full pipeline:
+      1. Search player name → get athlete ID from local index
+      2. Call ESPN athlete profile endpoint
+      3. Call ESPN gamelog endpoint  (concurrent with step 2)
+      4. Merge profile data + stats data into one unified dict
+    Returns None if the player cannot be found.
+    """
+    import asyncio
+
+    # Step 1 — search name, resolve athlete ID
+    base_player = resolve_player_by_name(name)
+    if base_player is None:
+        return None
+
+    athlete_id = base_player["id"]
+
+    # Steps 2 & 3 — fetch profile and gamelog concurrently
+    profile_data, gamelog_data = await asyncio.gather(
+        get_player_profile(athlete_id),
+        get_player_gamelog(athlete_id),
+    )
+
+    # Step 4 — merge profile data + stats data
+    merged = merge_player_profile(base_player, profile_data)
+    merged["_gamelog_entries"] = extract_stats_from_gamelog(gamelog_data)
+    merged["_raw_profile"] = profile_data
+    merged["_raw_gamelog"] = gamelog_data
+
+    return merged
 
 
 def profile_is_complete(player: dict) -> bool:
@@ -670,31 +776,32 @@ def build_game_stats_embed(game_name: str, summary: dict) -> discord.Embed:
     return embed
 
 
-def build_player_stats_embed(player: dict, overview: dict) -> discord.Embed:
-    team_display = TEAM_NAMES.get(player["team"], player["team"])
+def build_player_stats_embed(player: dict) -> discord.Embed:
+    team_display = TEAM_NAMES.get(player.get("team", ""), player.get("team", "N/A"))
 
     embed = discord.Embed(
         title=f"👤 {player['name']}",
         description=(
             f"**Team:** {team_display}\n"
-            f"**Position:** {player['position']}\n"
-            f"**Jersey:** {player['jersey'] if player['jersey'] else 'N/A'}"
+            f"**Position:** {player.get('position', 'N/A')}\n"
+            f"**Jersey:** {player.get('jersey') or 'N/A'}"
         ),
         color=0x7A5C2E,
     )
 
     if player.get("headshot"):
         embed.set_thumbnail(url=player["headshot"])
-    elif TEAM_LOGOS.get(player["team"]):
+    elif TEAM_LOGOS.get(player.get("team", "")):
         embed.set_thumbnail(url=TEAM_LOGOS[player["team"]])
 
-    source_label = player.get("profile_source", "Source unavailable")
+    source_label = player.get("profile_source", "ESPN")
     if player.get("team_logo"):
-        embed.set_footer(text=f"USO NFL Bot • Profile source: {source_label}", icon_url=player["team_logo"])
+        embed.set_footer(text=f"USO NFL Bot • {source_label}", icon_url=player["team_logo"])
     else:
-        embed.set_footer(text=f"USO NFL Bot • Profile source: {source_label}")
+        embed.set_footer(text=f"USO NFL Bot • {source_label}")
 
-    statistics = overview.get("statistics", []) or overview.get("stats", [])
+    # Stats come merged into player["stats"] by fetch_full_player_profile
+    statistics = player.get("stats") or []
     added = 0
 
     for section in statistics[:8]:
@@ -905,14 +1012,12 @@ async def gamestats(interaction: discord.Interaction, team: str):
 async def playerstats(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
 
-    player = resolve_player_by_name(name)
-    if player is None:
+    profile = await fetch_full_player_profile(name)
+    if profile is None:
         await interaction.followup.send(f"No player found for `{name}`.")
         return
 
-    overview = await get_player_overview(player["id"])
-    enriched_player = await enrich_player_profile_with_ai(player, overview)
-    await interaction.followup.send(embed=build_player_stats_embed(enriched_player, overview))
+    await interaction.followup.send(embed=build_player_stats_embed(profile))
 
 
 @bot.tree.command(name="gamelog", description="Search a player by name and show game log")
@@ -921,16 +1026,13 @@ async def playerstats(interaction: discord.Interaction, name: str):
 async def gamelog(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
 
-    player = resolve_player_by_name(name)
-    if player is None:
+    profile = await fetch_full_player_profile(name)
+    if profile is None:
         await interaction.followup.send(f"No player found for `{name}`.")
         return
 
-    overview = await get_player_overview(player["id"])
-    enriched_player = await enrich_player_profile_with_ai(player, overview)
-    gamelog_data = await get_player_gamelog(player["id"])
-    entries = extract_gamelog_entries(gamelog_data)
-    view = GameLogView(enriched_player, entries)
+    entries = profile["_gamelog_entries"]
+    view = GameLogView(profile, entries)
     await interaction.followup.send(embed=view.build_embed(), view=view)
 
 
@@ -1008,18 +1110,13 @@ async def ask(interaction: discord.Interaction, question: str):
 async def analyze(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
 
-    player = resolve_player_by_name(name)
-    if player is None:
+    profile = await fetch_full_player_profile(name)
+    if profile is None:
         await interaction.followup.send(f"No player found for `{name}`.")
         return
 
-    overview = await get_player_overview(player["id"])
-    enriched = await enrich_player_profile_with_ai(player, overview)
-
     stats_lines = []
-    statistics = overview.get("statistics", []) or overview.get("stats", [])
-    for section in statistics[:4]:
-        label = section.get("displayName") or section.get("name") or "Stats"
+    for section in (profile.get("stats") or [])[:4]:
         for stat in section.get("stats", [])[:5]:
             if isinstance(stat, dict):
                 sn = stat.get("displayName") or stat.get("name")
@@ -1028,7 +1125,8 @@ async def analyze(interaction: discord.Interaction, name: str):
                     stats_lines.append(f"{sn}: {sv}")
 
     stats_text = "\n".join(stats_lines) if stats_lines else "No detailed stats available."
-    team_display = TEAM_NAMES.get(enriched["team"], enriched["team"])
+    team_display = TEAM_NAMES.get(profile.get("team", ""), profile.get("team", "N/A"))
+    enriched = profile
 
     analysis = await call_openai(
         system_prompt=(

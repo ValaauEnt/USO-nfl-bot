@@ -700,37 +700,6 @@ def build_player_stats_embed(player: dict) -> discord.Embed:
     return embed
 
 
-def extract_gamelog_entries(gamelog: dict) -> list[dict]:
-    entries = []
-
-    if "events" in gamelog and isinstance(gamelog["events"], list):
-        for event in gamelog["events"]:
-            opponent = event.get("opponent", {}).get("displayName", "Opponent")
-            date = event.get("date", "Game")
-            stats = event.get("stats", [])
-            stat_parts = []
-
-            for s in stats[:6]:
-                if isinstance(s, dict):
-                    n = s.get("displayName") or s.get("name")
-                    v = s.get("displayValue") or s.get("value")
-                    if n and v is not None:
-                        stat_parts.append(f"{n}: {v}")
-
-            entries.append({
-                "title": f"{date} vs {opponent}",
-                "value": " • ".join(stat_parts) if stat_parts else "No stats available"
-            })
-
-    if not entries:
-        entries.append({
-            "title": "Game Log",
-            "value": "Game log came back in a different format or wasn't available."
-        })
-
-    return entries
-
-
 class GameLogView(discord.ui.View):
     def __init__(self, player: dict, entries: list[dict]):
         super().__init__(timeout=180)
@@ -773,6 +742,159 @@ class GameLogView(discord.ui.View):
         if self.page < len(self.entries) - 1:
             self.page += 1
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+
+def extract_season_stat_blocks(profile: dict) -> list[dict]:
+    """Pull season-by-season stat blocks from the raw ESPN athlete profile response."""
+    seasons = []
+
+    if isinstance(profile, dict):
+        for key in ["seasons", "seasonStats", "splits", "statistics"]:
+            value = profile.get(key)
+            if isinstance(value, list) and value:
+                for item in value:
+                    season_label = (
+                        item.get("displayName")
+                        or item.get("season")
+                        or item.get("name")
+                        or "Season"
+                    )
+                    stats_list = item.get("stats", [])
+                    lines = []
+                    if isinstance(stats_list, list):
+                        for stat in stats_list[:20]:
+                            if isinstance(stat, dict):
+                                n = stat.get("displayName") or stat.get("name")
+                                v = stat.get("displayValue") or stat.get("value")
+                                if n and v is not None:
+                                    lines.append(f"{n}: {v}")
+                    if lines:
+                        seasons.append({
+                            "label": str(season_label),
+                            "sections": [{"title": item.get("displayName") or "Stats", "lines": lines[:12]}]
+                        })
+                if seasons:
+                    break
+
+    if not seasons:
+        stats_sections = profile.get("statistics", []) or profile.get("stats", [])
+        if stats_sections:
+            section_blocks = []
+            for section in stats_sections[:6]:
+                label = section.get("displayName") or section.get("name") or "Stats"
+                lines = []
+                for stat in section.get("stats", [])[:10]:
+                    if isinstance(stat, dict):
+                        n = stat.get("displayName") or stat.get("name")
+                        v = stat.get("displayValue") or stat.get("value")
+                        if n and v is not None:
+                            lines.append(f"{n}: {v}")
+                if lines:
+                    section_blocks.append({"title": label, "lines": lines})
+            if section_blocks:
+                seasons.append({"label": "Current Season", "sections": section_blocks})
+
+    return seasons
+
+
+def build_season_stats_embed(player: dict, season_block: dict, page: int, total: int) -> discord.Embed:
+    team_display = TEAM_NAMES.get(player["team"], player["team"])
+
+    embed = discord.Embed(
+        title=f"📊 {season_block['label']} Stats — {player['name']}",
+        description=(
+            f"**POS:** {player['position']}   "
+            f"**TEAM:** {team_display}   "
+            f"**JERSEY:** {player['jersey'] if player.get('jersey') else 'N/A'}"
+        ),
+        color=0x7A5C2E,
+    )
+
+    if player.get("headshot"):
+        embed.set_thumbnail(url=player["headshot"])
+    elif TEAM_LOGOS.get(player.get("team", "")):
+        embed.set_thumbnail(url=TEAM_LOGOS[player["team"]])
+
+    for section in season_block["sections"][:4]:
+        value = "\n".join(section["lines"][:12]) if section["lines"] else "No stats"
+        embed.add_field(name=section["title"][:256], value=value[:1024], inline=False)
+
+    embed.set_footer(text=f"Season {page + 1}/{total} • USO NFL Bot")
+    return embed
+
+
+class SeasonStatsView(discord.ui.View):
+    def __init__(self, player: dict, season_blocks: list[dict], gamelog_entries: list[dict]):
+        super().__init__(timeout=180)
+        self.player = player
+        self.season_blocks = season_blocks
+        self.gamelog_entries = gamelog_entries
+        self.page = 0
+        self.mode = "season"
+        self.refresh_buttons()
+
+    def refresh_buttons(self):
+        self.clear_items()
+
+        for idx, block in enumerate(self.season_blocks[:4]):
+            style = discord.ButtonStyle.primary if idx == self.page and self.mode == "season" else discord.ButtonStyle.secondary
+            button = discord.ui.Button(label=block["label"][:20], style=style)
+
+            async def season_callback(interaction: discord.Interaction, i=idx):
+                self.page = i
+                self.mode = "season"
+                self.refresh_buttons()
+                await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+            button.callback = season_callback
+            self.add_item(button)
+
+        game_log_button = discord.ui.Button(
+            label=f"{self.season_blocks[self.page]['label'][:18]} Game Log",
+            style=discord.ButtonStyle.secondary if self.mode == "season" else discord.ButtonStyle.primary,
+        )
+
+        async def gamelog_callback(interaction: discord.Interaction):
+            self.mode = "gamelog"
+            self.refresh_buttons()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+        game_log_button.callback = gamelog_callback
+        self.add_item(game_log_button)
+
+    def build_embed(self) -> discord.Embed:
+        if self.mode == "season":
+            return build_season_stats_embed(
+                self.player,
+                self.season_blocks[self.page],
+                self.page,
+                len(self.season_blocks),
+            )
+
+        team_display = TEAM_NAMES.get(self.player["team"], self.player["team"])
+        embed = discord.Embed(
+            title=f"📋 {self.season_blocks[self.page]['label']} Game Log — {self.player['name']}",
+            description=(
+                f"**Team:** {team_display}\n"
+                f"**Position:** {self.player['position']}\n"
+                f"**Jersey:** {self.player['jersey'] if self.player.get('jersey') else 'N/A'}"
+            ),
+            color=0x7A5C2E,
+        )
+
+        if self.player.get("headshot"):
+            embed.set_thumbnail(url=self.player["headshot"])
+        elif TEAM_LOGOS.get(self.player.get("team", "")):
+            embed.set_thumbnail(url=TEAM_LOGOS[self.player["team"]])
+
+        if self.gamelog_entries:
+            for entry in self.gamelog_entries[:8]:
+                embed.add_field(name=entry["title"][:256], value=entry["value"][:1024], inline=False)
+        else:
+            embed.add_field(name="No Data", value="No game log entries available.", inline=False)
+
+        embed.set_footer(text="USO NFL Bot")
+        return embed
 
 
 async def player_name_autocomplete(
@@ -904,6 +1026,28 @@ async def gamelog(interaction: discord.Interaction, name: str):
 
     entries = profile["_gamelog_entries"]
     view = GameLogView(profile, entries)
+    await interaction.followup.send(embed=view.build_embed(), view=view)
+
+
+@bot.tree.command(name="seasonstats", description="Show a player's season stats with year buttons and game log toggle")
+@app_commands.describe(name="Start typing a player name")
+@app_commands.autocomplete(name=player_name_autocomplete)
+async def seasonstats(interaction: discord.Interaction, name: str):
+    await interaction.response.defer()
+
+    profile = await fetch_full_player_profile(name)
+    if profile is None:
+        await interaction.followup.send(f"No player found for `{name}`.")
+        return
+
+    season_blocks = extract_season_stat_blocks(profile.get("_raw_profile") or {})
+    if not season_blocks:
+        await interaction.followup.send(
+            f"No season stats available for **{profile['name']}**. Try `/playerstats` instead."
+        )
+        return
+
+    view = SeasonStatsView(profile, season_blocks, profile["_gamelog_entries"])
     await interaction.followup.send(embed=view.build_embed(), view=view)
 
 

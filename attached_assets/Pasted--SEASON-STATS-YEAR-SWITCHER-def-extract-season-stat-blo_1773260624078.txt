@@ -1,0 +1,212 @@
+# ---------- SEASON STATS / YEAR SWITCHER ----------
+
+def extract_season_stat_blocks(overview: dict) -> list[dict]:
+    """
+    Tries to pull season-by-season stat blocks from ESPN overview-like data.
+    If the response doesn't include multiple seasons, it falls back to one season block.
+    """
+    seasons = []
+
+    # Common patterns vary, so we try several possibilities.
+    # 1) direct season lists
+    if isinstance(overview, dict):
+        for key in ["seasons", "seasonStats", "splits", "statistics"]:
+            value = overview.get(key)
+            if isinstance(value, list) and value:
+                # If it's already season-shaped
+                for item in value:
+                    season_label = (
+                        item.get("displayName")
+                        or item.get("season")
+                        or item.get("name")
+                        or "Season"
+                    )
+
+                    stats_list = item.get("stats", [])
+                    lines = []
+                    if isinstance(stats_list, list):
+                        for stat in stats_list[:20]:
+                            if isinstance(stat, dict):
+                                n = stat.get("displayName") or stat.get("name")
+                                v = stat.get("displayValue") or stat.get("value")
+                                if n and v is not None:
+                                    lines.append(f"{n}: {v}")
+
+                    if lines:
+                        seasons.append({
+                            "label": str(season_label),
+                            "sections": [
+                                {
+                                    "title": item.get("displayName") or "Stats",
+                                    "lines": lines[:12]
+                                }
+                            ]
+                        })
+
+    # 2) fallback to current statistics layout
+    if not seasons:
+        stats_sections = overview.get("statistics", []) or overview.get("stats", [])
+        if stats_sections:
+            section_blocks = []
+            for section in stats_sections[:6]:
+                label = section.get("displayName") or section.get("name") or "Stats"
+                stats = section.get("stats", [])
+                lines = []
+                for stat in stats[:10]:
+                    if isinstance(stat, dict):
+                        n = stat.get("displayName") or stat.get("name")
+                        v = stat.get("displayValue") or stat.get("value")
+                        if n and v is not None:
+                            lines.append(f"{n}: {v}")
+                if lines:
+                    section_blocks.append({"title": label, "lines": lines})
+
+            if section_blocks:
+                seasons.append({
+                    "label": "Current Season",
+                    "sections": section_blocks
+                })
+
+    return seasons
+
+
+def build_season_stats_embed(player: dict, season_block: dict, page: int, total: int) -> discord.Embed:
+    team_display = TEAM_NAMES.get(player["team"], player["team"])
+
+    embed = discord.Embed(
+        title=f"📊 {season_block['label']} Player Stats for {player['name']}",
+        description=(
+            f"**POS:** {player['position']}   "
+            f"**TEAM:** {team_display}   "
+            f"**JERSEY:** {player['jersey'] if player['jersey'] else 'N/A'}"
+        ),
+        color=0x7A5C2E,
+    )
+
+    if player.get("headshot"):
+        embed.set_thumbnail(url=player["headshot"])
+    elif TEAM_LOGOS.get(player["team"]):
+        embed.set_thumbnail(url=TEAM_LOGOS[player["team"]])
+
+    for section in season_block["sections"][:4]:
+        value = "\n".join(section["lines"][:12]) if section["lines"] else "No stats"
+        embed.add_field(name=section["title"][:256], value=value[:1024], inline=False)
+
+    source_label = player.get("profile_source", "Unknown")
+    embed.set_footer(text=f"Season {page + 1}/{total} • Profile source: {source_label}")
+    return embed
+
+
+class SeasonStatsView(discord.ui.View):
+    def __init__(self, player: dict, season_blocks: list[dict], gamelog_entries: list[dict]):
+        super().__init__(timeout=180)
+        self.player = player
+        self.season_blocks = season_blocks
+        self.gamelog_entries = gamelog_entries
+        self.page = 0
+        self.mode = "season"  # season or gamelog
+        self.refresh_buttons()
+
+    def refresh_buttons(self):
+        self.clear_items()
+
+        # season buttons (up to first 4 seasons to keep it clean)
+        for idx, block in enumerate(self.season_blocks[:4]):
+            style = discord.ButtonStyle.primary if idx == self.page and self.mode == "season" else discord.ButtonStyle.secondary
+            button = discord.ui.Button(label=block["label"][:20], style=style)
+
+            async def season_callback(interaction: discord.Interaction, i=idx):
+                self.page = i
+                self.mode = "season"
+                self.refresh_buttons()
+                await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+            button.callback = season_callback
+            self.add_item(button)
+
+        # game log button
+        game_log_button = discord.ui.Button(
+            label=f"{self.season_blocks[self.page]['label'][:18]} Game Log",
+            style=discord.ButtonStyle.secondary if self.mode == "season" else discord.ButtonStyle.primary
+        )
+
+        async def gamelog_callback(interaction: discord.Interaction):
+            self.mode = "gamelog"
+            self.refresh_buttons()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+        game_log_button.callback = gamelog_callback
+        self.add_item(game_log_button)
+
+    def build_embed(self) -> discord.Embed:
+        if self.mode == "season":
+            return build_season_stats_embed(
+                self.player,
+                self.season_blocks[self.page],
+                self.page,
+                len(self.season_blocks),
+            )
+
+        # gamelog mode
+        if self.gamelog_entries:
+            current = self.gamelog_entries[0]
+            team_display = TEAM_NAMES.get(self.player["team"], self.player["team"])
+
+            embed = discord.Embed(
+                title=f"📋 {self.season_blocks[self.page]['label']} Game Log for {self.player['name']}",
+                description=(
+                    f"**Team:** {team_display}\n"
+                    f"**Position:** {self.player['position']}\n"
+                    f"**Jersey:** {self.player['jersey'] if self.player['jersey'] else 'N/A'}"
+                ),
+                color=0x7A5C2E,
+            )
+
+            if self.player.get("headshot"):
+                embed.set_thumbnail(url=self.player["headshot"])
+            elif TEAM_LOGOS.get(self.player["team"]):
+                embed.set_thumbnail(url=TEAM_LOGOS[self.player["team"]])
+
+            # show first several entries for now
+            for entry in self.gamelog_entries[:8]:
+                embed.add_field(
+                    name=entry["title"][:256],
+                    value=entry["value"][:1024],
+                    inline=False
+                )
+
+            embed.set_footer(text=f"Profile source: {self.player.get('profile_source', 'Unknown')}")
+            return embed
+
+        embed = discord.Embed(
+            title=f"📋 {self.player['name']} Game Log",
+            description="No game log data available.",
+            color=0x7A5C2E,
+        )
+        return embed
+
+
+@bot.tree.command(name="seasonstats", description="Show a player's season stats with year switch buttons")
+@app_commands.describe(name="Start typing a player name")
+@app_commands.autocomplete(name=player_name_autocomplete)
+async def seasonstats(interaction: discord.Interaction, name: str):
+    await interaction.response.defer()
+
+    player = resolve_player_by_name(name)
+    if player is None:
+        await interaction.followup.send(f"No player found for `{name}`.")
+        return
+
+    overview = await get_player_overview(player["id"])
+    enriched_player = await enrich_player_profile_with_ai(player, overview) if "enrich_player_profile_with_ai" in globals() else merge_player_profile(player, overview)
+
+    season_blocks = extract_season_stat_blocks(overview)
+    if not season_blocks:
+        await interaction.followup.send("No season stats available for this player.")
+        return
+
+    gamelog_data = await get_player_gamelog(player["id"])
+    gamelog_entries = extract_gamelog_entries(gamelog_data)
+
+    view = SeasonStatsView(enriched_player, season_blocks, gamelog_entries)
+    await interaction.followup.send(embed=view.build_embed(), view=view)

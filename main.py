@@ -375,6 +375,41 @@ async def get_trade_tracker_sections(limit: int = 12) -> dict:
     return sections
 
 
+async def get_market_watch_sections(limit: int = 18) -> dict:
+    items = await get_news_items(limit=30)
+
+    sections = {
+        "trades": [],
+        "contracts": [],
+        "other": []
+    }
+
+    for item in items:
+        headline = item.get("headline", "")
+        description = item.get("description", "")
+        text = f"{headline} {description}".lower()
+
+        entry = {
+            "headline": headline,
+            "description": description,
+            "url": item.get("url", ""),
+            "source": item.get("source", "Source")
+        }
+
+        if any(word in text for word in TRADE_KEYWORDS):
+            sections["trades"].append(entry)
+        elif any(word in text for word in CONTRACT_KEYWORDS):
+            sections["contracts"].append(entry)
+        elif any(word in text for word in OTHER_MOVE_KEYWORDS):
+            sections["other"].append(entry)
+
+        total = len(sections["trades"]) + len(sections["contracts"]) + len(sections["other"])
+        if total >= limit:
+            break
+
+    return sections
+
+
 async def _fetch_team_roster(team_abbr: str) -> list[dict]:
     slug = ROSTER_SLUGS.get(team_abbr, team_abbr.lower())
     url = ESPN_TEAM_ROSTER_URL.format(team=slug)

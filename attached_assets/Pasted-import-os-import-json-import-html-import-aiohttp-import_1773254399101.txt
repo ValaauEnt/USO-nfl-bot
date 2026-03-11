@@ -1,0 +1,998 @@
+import os
+import json
+import html
+import aiohttp
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
+from datetime import datetime
+from bs4 import BeautifulSoup
+from openai import OpenAI
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Optional auto-post channels. Leave as 0 if unused.
+SCORES_CHANNEL_ID = 0
+NEWS_CHANNEL_ID = 0
+ALERTS_CHANNEL_ID = 0
+
+# ESPN
+ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+ESPN_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news"
+ESPN_SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={event_id}"
+ESPN_ATHLETES_URL = "https://sports.core.api.espn.com/v3/sports/football/nfl/athletes?limit=20000&active=true"
+ESPN_ATHLETE_OVERVIEW_URL = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}/overview"
+ESPN_ATHLETE_GAMELOG_URL = "https://site.web.api.espn.com/apis/common/v3/sports/football/nfl/athletes/{athlete_id}/gamelog"
+
+# Fallback pages
+NFL_NEWS_URL = "https://www.nfl.com/news/"
+YAHOO_NFL_NEWS_URL = "https://sports.yahoo.com/nfl/news/"
+NFL_SEARCH_URL = "https://www.nfl.com/search/?query={query}"
+YAHOO_SEARCH_URL = "https://sports.yahoo.com/search/?fr=sycsrp_catchall&type=2button&p={query}"
+
+TEAM_LOGOS = {
+    "ARI": "https://a.espncdn.com/i/teamlogos/nfl/500/ari.png",
+    "ATL": "https://a.espncdn.com/i/teamlogos/nfl/500/atl.png",
+    "BAL": "https://a.espncdn.com/i/teamlogos/nfl/500/bal.png",
+    "BUF": "https://a.espncdn.com/i/teamlogos/nfl/500/buf.png",
+    "CAR": "https://a.espncdn.com/i/teamlogos/nfl/500/car.png",
+    "CHI": "https://a.espncdn.com/i/teamlogos/nfl/500/chi.png",
+    "CIN": "https://a.espncdn.com/i/teamlogos/nfl/500/cin.png",
+    "CLE": "https://a.espncdn.com/i/teamlogos/nfl/500/cle.png",
+    "DAL": "https://a.espncdn.com/i/teamlogos/nfl/500/dal.png",
+    "DEN": "https://a.espncdn.com/i/teamlogos/nfl/500/den.png",
+    "DET": "https://a.espncdn.com/i/teamlogos/nfl/500/det.png",
+    "GB": "https://a.espncdn.com/i/teamlogos/nfl/500/gb.png",
+    "HOU": "https://a.espncdn.com/i/teamlogos/nfl/500/hou.png",
+    "IND": "https://a.espncdn.com/i/teamlogos/nfl/500/ind.png",
+    "JAX": "https://a.espncdn.com/i/teamlogos/nfl/500/jax.png",
+    "KC": "https://a.espncdn.com/i/teamlogos/nfl/500/kc.png",
+    "LV": "https://a.espncdn.com/i/teamlogos/nfl/500/lv.png",
+    "LAC": "https://a.espncdn.com/i/teamlogos/nfl/500/lac.png",
+    "LAR": "https://a.espncdn.com/i/teamlogos/nfl/500/lar.png",
+    "MIA": "https://a.espncdn.com/i/teamlogos/nfl/500/mia.png",
+    "MIN": "https://a.espncdn.com/i/teamlogos/nfl/500/min.png",
+    "NE": "https://a.espncdn.com/i/teamlogos/nfl/500/ne.png",
+    "NO": "https://a.espncdn.com/i/teamlogos/nfl/500/no.png",
+    "NYG": "https://a.espncdn.com/i/teamlogos/nfl/500/nyg.png",
+    "NYJ": "https://a.espncdn.com/i/teamlogos/nfl/500/nyj.png",
+    "PHI": "https://a.espncdn.com/i/teamlogos/nfl/500/phi.png",
+    "PIT": "https://a.espncdn.com/i/teamlogos/nfl/500/pit.png",
+    "SEA": "https://a.espncdn.com/i/teamlogos/nfl/500/sea.png",
+    "SF": "https://a.espncdn.com/i/teamlogos/nfl/500/sf.png",
+    "TB": "https://a.espncdn.com/i/teamlogos/nfl/500/tb.png",
+    "TEN": "https://a.espncdn.com/i/teamlogos/nfl/500/ten.png",
+    "WAS": "https://a.espncdn.com/i/teamlogos/nfl/500/wsh.png",
+}
+
+TEAM_NAMES = {
+    "ARI": "Arizona Cardinals",
+    "ATL": "Atlanta Falcons",
+    "BAL": "Baltimore Ravens",
+    "BUF": "Buffalo Bills",
+    "CAR": "Carolina Panthers",
+    "CHI": "Chicago Bears",
+    "CIN": "Cincinnati Bengals",
+    "CLE": "Cleveland Browns",
+    "DAL": "Dallas Cowboys",
+    "DEN": "Denver Broncos",
+    "DET": "Detroit Lions",
+    "GB": "Green Bay Packers",
+    "HOU": "Houston Texans",
+    "IND": "Indianapolis Colts",
+    "JAX": "Jacksonville Jaguars",
+    "KC": "Kansas City Chiefs",
+    "LV": "Las Vegas Raiders",
+    "LAC": "Los Angeles Chargers",
+    "LAR": "Los Angeles Rams",
+    "MIA": "Miami Dolphins",
+    "MIN": "Minnesota Vikings",
+    "NE": "New England Patriots",
+    "NO": "New Orleans Saints",
+    "NYG": "New York Giants",
+    "NYJ": "New York Jets",
+    "PHI": "Philadelphia Eagles",
+    "PIT": "Pittsburgh Steelers",
+    "SEA": "Seattle Seahawks",
+    "SF": "San Francisco 49ers",
+    "TB": "Tampa Bay Buccaneers",
+    "TEN": "Tennessee Titans",
+    "WAS": "Washington Commanders",
+}
+
+TRADE_KEYWORDS = [
+    "trade", "traded", "acquire", "acquired", "deal", "dealt", "swap", "swapped"
+]
+COMPLETED_WORDS = ["acquired", "acquire", "traded", "lands", "gets"]
+RUMOR_WORDS = ["rumor", "rumours", "report", "talks", "discussing", "expected", "pursuing"]
+
+intents = discord.Intents.default()
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+session: aiohttp.ClientSession | None = None
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+scores_message_id: int | None = None
+news_message_id: int | None = None
+previous_scores: dict[str, tuple[str, str, str]] = {}
+
+PLAYER_INDEX: list[dict] = []
+PLAYER_LOOKUP: dict[str, dict] = {}
+
+
+def normalize_name(name: str) -> str:
+    return " ".join(name.lower().strip().split())
+
+
+async def fetch_json(url: str) -> dict:
+    global session
+    if session is None:
+        raise RuntimeError("HTTP session not started.")
+    async with session.get(url, timeout=25) as resp:
+        resp.raise_for_status()
+        return await resp.json()
+
+
+async def fetch_text(url: str) -> str:
+    global session
+    if session is None:
+        raise RuntimeError("HTTP session not started.")
+    async with session.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"}) as resp:
+        resp.raise_for_status()
+        return await resp.text()
+
+
+async def get_live_scoreboard() -> list[dict]:
+    data = await fetch_json(ESPN_SCOREBOARD_URL)
+    games = []
+
+    for event in data.get("events", []):
+        competition = event.get("competitions", [{}])[0]
+        competitors = competition.get("competitors", [])
+
+        away = next((c for c in competitors if c.get("homeAway") == "away"), {})
+        home = next((c for c in competitors if c.get("homeAway") == "home"), {})
+
+        status = competition.get("status", {})
+        status_type = status.get("type", {})
+        situation = competition.get("situation", {})
+
+        games.append({
+            "id": event.get("id"),
+            "name": event.get("shortName", event.get("name", "NFL Game")),
+            "away_team": away.get("team", {}).get("abbreviation", "AWAY"),
+            "home_team": home.get("team", {}).get("abbreviation", "HOME"),
+            "away_score": away.get("score", "0"),
+            "home_score": home.get("score", "0"),
+            "state": status_type.get("shortDetail", "Status unavailable"),
+            "completed": status_type.get("completed", False),
+            "possession": situation.get("possession"),
+            "down_distance": situation.get("downDistanceText", ""),
+        })
+
+    return games
+
+
+async def get_game_summary(event_id: str) -> dict:
+    return await fetch_json(ESPN_SUMMARY_URL.format(event_id=event_id))
+
+
+async def scrape_basic_headlines(url: str, limit: int = 5) -> list[dict]:
+    try:
+        text = await fetch_text(url)
+        soup = BeautifulSoup(text, "html.parser")
+        items = []
+        seen = set()
+
+        for a in soup.find_all("a", href=True):
+            title = a.get_text(" ", strip=True)
+            href = a["href"]
+
+            if not title or len(title) < 20:
+                continue
+
+            if href.startswith("/"):
+                if "yahoo.com" in url:
+                    href = "https://sports.yahoo.com" + href
+                elif "nfl.com" in url:
+                    href = "https://www.nfl.com" + href
+
+            if not href.startswith("http"):
+                continue
+
+            key = (title, href)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            items.append({
+                "headline": html.unescape(title),
+                "description": "Fallback source headline",
+                "url": href
+            })
+
+            if len(items) >= limit:
+                break
+
+        return items
+    except Exception:
+        return []
+
+
+async def get_news_items(limit: int = 5) -> list[dict]:
+    try:
+        data = await fetch_json(ESPN_NEWS_URL)
+        items = []
+        for article in data.get("articles", [])[:limit]:
+            url = article.get("links", {}).get("web", {}).get("href", "")
+            items.append({
+                "headline": article.get("headline", "No headline"),
+                "description": article.get("description", "No description"),
+                "url": url,
+                "source": "ESPN"
+            })
+        if items:
+            return items
+    except Exception:
+        pass
+
+    nfl_items = await scrape_basic_headlines(NFL_NEWS_URL, limit=limit)
+    if nfl_items:
+        for item in nfl_items:
+            item["source"] = "NFL.com"
+        return nfl_items
+
+    yahoo_items = await scrape_basic_headlines(YAHOO_NFL_NEWS_URL, limit=limit)
+    for item in yahoo_items:
+        item["source"] = "Yahoo Sports"
+    return yahoo_items
+
+
+async def get_recent_trade_articles(limit: int = 8) -> list[dict]:
+    items = await get_news_items(limit=20)
+    trades = []
+
+    for item in items:
+        text = f"{item.get('headline', '')} {item.get('description', '')}".lower()
+        if any(word in text for word in TRADE_KEYWORDS):
+            trades.append(item)
+        if len(trades) >= limit:
+            break
+
+    return trades
+
+
+async def get_trade_tracker_sections(limit: int = 12) -> dict:
+    items = await get_news_items(limit=30)
+    sections = {"completed": [], "rumors": [], "other": []}
+
+    for item in items:
+        text = f"{item.get('headline', '')} {item.get('description', '')}".lower()
+        if not any(word in text for word in TRADE_KEYWORDS):
+            continue
+
+        if any(word in text for word in COMPLETED_WORDS):
+            sections["completed"].append(item)
+        elif any(word in text for word in RUMOR_WORDS):
+            sections["rumors"].append(item)
+        else:
+            sections["other"].append(item)
+
+        total = len(sections["completed"]) + len(sections["rumors"]) + len(sections["other"])
+        if total >= limit:
+            break
+
+    return sections
+
+
+async def build_player_index() -> None:
+    global PLAYER_INDEX, PLAYER_LOOKUP
+    data = await fetch_json(ESPN_ATHLETES_URL)
+
+    fresh_index = []
+    fresh_lookup = {}
+
+    for item in data.get("items", []):
+        athlete_id = str(item.get("id", ""))
+        display_name = item.get("displayName") or item.get("fullName")
+        if not athlete_id or not display_name:
+            continue
+
+        position = item.get("position", {}).get("abbreviation", "UNK")
+        team = item.get("team", {}).get("abbreviation", "FA")
+        jersey = item.get("jersey", "")
+        headshot = item.get("headshot", {}).get("href", "")
+        team_logo = ""
+        logos = item.get("team", {}).get("logos", [])
+        if isinstance(logos, list) and logos:
+            team_logo = logos[0].get("href", "")
+
+        player = {
+            "id": athlete_id,
+            "name": display_name,
+            "position": position,
+            "team": team,
+            "jersey": jersey,
+            "headshot": headshot,
+            "team_logo": team_logo,
+            "search": normalize_name(display_name),
+            "label": f"{display_name} ({team}, {position})",
+        }
+
+        fresh_index.append(player)
+        fresh_lookup[athlete_id] = player
+
+    PLAYER_INDEX = fresh_index
+    PLAYER_LOOKUP = fresh_lookup
+
+
+def search_players(query: str, limit: int = 25) -> list[dict]:
+    q = normalize_name(query)
+    if not q:
+        return PLAYER_INDEX[:limit]
+
+    starts = [p for p in PLAYER_INDEX if p["search"].startswith(q)]
+    contains = [p for p in PLAYER_INDEX if q in p["search"] and not p["search"].startswith(q)]
+    return (starts + contains)[:limit]
+
+
+def resolve_player_by_name(query: str) -> dict | None:
+    matches = search_players(query, limit=10)
+    if not matches:
+        return None
+
+    q = normalize_name(query)
+    exact = next((p for p in matches if p["search"] == q), None)
+    return exact or matches[0]
+
+
+async def get_player_overview(athlete_id: str) -> dict:
+    try:
+        return await fetch_json(ESPN_ATHLETE_OVERVIEW_URL.format(athlete_id=athlete_id))
+    except Exception:
+        return {}
+
+
+async def get_player_gamelog(athlete_id: str) -> dict:
+    try:
+        return await fetch_json(ESPN_ATHLETE_GAMELOG_URL.format(athlete_id=athlete_id))
+    except Exception:
+        return {}
+
+
+def merge_player_profile(base_player: dict, overview: dict) -> dict:
+    player = dict(base_player)
+    player["profile_source"] = "ESPN athlete index"
+
+    athlete = overview.get("athlete", {}) if isinstance(overview, dict) else {}
+    if athlete:
+        team_abbr = athlete.get("team", {}).get("abbreviation")
+        position_abbr = athlete.get("position", {}).get("abbreviation")
+        jersey = athlete.get("jersey")
+        headshot = athlete.get("headshot", {}).get("href")
+
+        if team_abbr:
+            player["team"] = team_abbr
+        if position_abbr:
+            player["position"] = position_abbr
+        if jersey:
+            player["jersey"] = jersey
+        if headshot:
+            player["headshot"] = headshot
+
+        team_logo = ""
+        logos = athlete.get("team", {}).get("logos", [])
+        if isinstance(logos, list) and logos:
+            team_logo = logos[0].get("href", "")
+        if team_logo:
+            player["team_logo"] = team_logo
+
+        player["profile_source"] = "ESPN overview"
+
+    return player
+
+
+def profile_is_complete(player: dict) -> bool:
+    return bool(
+        player.get("team")
+        and player.get("team") not in ("FA", "UNK")
+        and player.get("position")
+        and player.get("position") != "UNK"
+        and player.get("headshot")
+    )
+
+
+async def scrape_candidate_profile_pages(player_name: str, limit: int = 2) -> list[str]:
+    candidates = []
+
+    nfl_search = NFL_SEARCH_URL.format(query=player_name.replace(" ", "%20"))
+    yahoo_search = YAHOO_SEARCH_URL.format(query=player_name.replace(" ", "+"))
+
+    for url in [nfl_search, yahoo_search]:
+        try:
+            text = await fetch_text(url)
+            soup = BeautifulSoup(text, "html.parser")
+            snippets = []
+
+            title = soup.title.get_text(" ", strip=True) if soup.title else ""
+            if title:
+                snippets.append(title)
+
+            meta_desc = soup.find("meta", attrs={"name": "description"})
+            if meta_desc and meta_desc.get("content"):
+                snippets.append(meta_desc["content"])
+
+            og_desc = soup.find("meta", attrs={"property": "og:description"})
+            if og_desc and og_desc.get("content"):
+                snippets.append(og_desc["content"])
+
+            body_text = soup.get_text(" ", strip=True)
+            body_text = re.sub(r"\s+", " ", body_text)
+            if body_text:
+                snippets.append(body_text[:5000])
+
+            combined = "\n\n".join(snippets).strip()
+            if combined:
+                candidates.append(combined)
+
+            if len(candidates) >= limit:
+                break
+        except Exception:
+            continue
+
+    return candidates
+
+
+async def ai_extract_player_profile(player_name: str, page_texts: list[str]) -> dict:
+    if not openai_client or not page_texts:
+        return {}
+
+    combined = "\n\n---\n\n".join(page_texts[:2])
+
+    def _call():
+        response = openai_client.responses.create(
+            model="gpt-5.4",
+            input=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Extract NFL player profile data from source text. "
+                        "Do not guess. If a field is missing or uncertain, return null. "
+                        "Return only structured data matching the schema."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Player name: {player_name}\n\nSource text:\n{combined}",
+                },
+            ],
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "player_profile",
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "properties": {
+                            "name": {"type": ["string", "null"]},
+                            "team": {"type": ["string", "null"]},
+                            "position": {"type": ["string", "null"]},
+                            "jersey": {"type": ["string", "null"]},
+                            "headshot": {"type": ["string", "null"]},
+                        },
+                        "required": ["name", "team", "position", "jersey", "headshot"],
+                    },
+                }
+            },
+        )
+        return json.loads(response.output_text)
+
+    import asyncio
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, _call)
+    except Exception:
+        return {}
+
+
+def normalize_team_value(team: str | None) -> str | None:
+    if not team:
+        return None
+    team = team.strip()
+
+    if team.upper() in TEAM_NAMES:
+        return team.upper()
+
+    for abbr, full_name in TEAM_NAMES.items():
+        if team.lower() == full_name.lower():
+            return abbr
+
+    return team
+
+
+async def enrich_player_profile_with_ai(player: dict, overview: dict) -> dict:
+    merged = merge_player_profile(player, overview)
+
+    if profile_is_complete(merged):
+        return merged
+
+    page_texts = await scrape_candidate_profile_pages(player["name"])
+    extracted = await ai_extract_player_profile(player["name"], page_texts)
+
+    if extracted:
+        team_val = normalize_team_value(extracted.get("team"))
+        if (not merged.get("team") or merged.get("team") in ("FA", "UNK")) and team_val:
+            merged["team"] = team_val
+
+        if (not merged.get("position") or merged.get("position") == "UNK") and extracted.get("position"):
+            merged["position"] = extracted["position"]
+
+        if not merged.get("jersey") and extracted.get("jersey"):
+            merged["jersey"] = extracted["jersey"]
+
+        if not merged.get("headshot") and extracted.get("headshot"):
+            merged["headshot"] = extracted["headshot"]
+
+        if extracted.get("team") or extracted.get("position") or extracted.get("jersey") or extracted.get("headshot"):
+            merged["profile_source"] = "AI extracted from fallback pages"
+
+    return merged
+
+
+def build_scoreboard_embed(games: list[dict]) -> discord.Embed:
+    embed = discord.Embed(
+        title="🏈 NFL LIVE SCOREBOARD",
+        description=f"Current week scores • Updated {datetime.now().strftime('%b %d, %Y • %I:%M %p')}",
+        color=0x7A5C2E,
+    )
+
+    if not games:
+        embed.add_field(
+            name="No Games Found",
+            value="No live or scheduled NFL games found for the current week.",
+            inline=False
+        )
+        return embed
+
+    for game in games[:16]:
+        extra = ""
+        if game.get("possession"):
+            extra += f"\nPossession: **{game['possession']}**"
+        if game.get("down_distance"):
+            extra += f"\n{game['down_distance']}"
+
+        embed.add_field(
+            name=f"{game['away_team']} @ {game['home_team']}",
+            value=f"**{game['away_score']} - {game['home_score']}**\n{game['state']}{extra}",
+            inline=False,
+        )
+
+    first_logo = TEAM_LOGOS.get(games[0]["away_team"])
+    if first_logo:
+        embed.set_thumbnail(url=first_logo)
+
+    embed.set_footer(text="USO NFL Bot • Live current week scoreboard")
+    return embed
+
+
+def build_news_embed(items: list[dict]) -> discord.Embed:
+    embed = discord.Embed(
+        title="📰 NFL Headlines",
+        description="Latest NFL headlines",
+        color=0x7A5C2E,
+    )
+
+    if not items:
+        embed.add_field(name="No News", value="No headlines available.", inline=False)
+        return embed
+
+    for item in items[:6]:
+        source = item.get("source", "Source")
+        value = f"{item.get('description', '')[:180]}\n{item.get('url', '')}\n**Source:** {source}"
+        embed.add_field(name=item.get("headline", "Headline")[:256], value=value[:1024], inline=False)
+
+    return embed
+
+
+def build_recent_trades_embed(items: list[dict]) -> discord.Embed:
+    embed = discord.Embed(
+        title="🔥 NFL OFFSEASON TRADE TRACKER",
+        description="Recent trade-related headlines",
+        color=0x7A5C2E
+    )
+
+    if not items:
+        embed.add_field(
+            name="No recent trade headlines found",
+            value="No trade-related headlines were returned right now.",
+            inline=False
+        )
+        return embed
+
+    for item in items[:6]:
+        source = item.get("source", "Source")
+        text = item.get("description", "No summary available.")[:220]
+        if item.get("url"):
+            text = f"{text}\n{item['url']}\n**Source:** {source}"
+        embed.add_field(name=item.get("headline", "Headline")[:256], value=text[:1024], inline=False)
+
+    embed.set_footer(text="USO NFL Bot • Trade/news tracker")
+    return embed
+
+
+def build_trade_tracker_embed(sections: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title="📊 NFL TRADE TRACKER",
+        description="Recent trade-related headlines",
+        color=0x7A5C2E
+    )
+
+    def block(items, empty_text="None right now."):
+        if not items:
+            return empty_text
+        lines = []
+        for item in items[:3]:
+            source = item.get("source", "")
+            lines.append(f"• **{item.get('headline','Headline')}** ({source})")
+        return "\n".join(lines)
+
+    embed.add_field(name="Completed / Strong Signals", value=block(sections["completed"]), inline=False)
+    embed.add_field(name="Rumors / Reports", value=block(sections["rumors"]), inline=False)
+    embed.add_field(name="Other Trade Headlines", value=block(sections["other"]), inline=False)
+    embed.set_footer(text="USO NFL Bot")
+    return embed
+
+
+def build_game_stats_embed(game_name: str, summary: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"📊 {game_name}",
+        color=0x7A5C2E,
+    )
+
+    leaders = summary.get("leaders", [])
+    if not leaders:
+        embed.description = "No leader stats available yet."
+        return embed
+
+    for group in leaders[:4]:
+        leader_list = group.get("leaders", [])
+        if not leader_list:
+            continue
+        leader = leader_list[0]
+        athlete = leader.get("athlete", {}).get("displayName", "Unknown")
+        display_value = leader.get("displayValue", "No stats")
+        name = group.get("name", "Leaders")
+        embed.add_field(name=name, value=f"**{athlete}** — {display_value}", inline=False)
+
+    return embed
+
+
+def build_player_stats_embed(player: dict, overview: dict) -> discord.Embed:
+    team_display = TEAM_NAMES.get(player["team"], player["team"])
+
+    embed = discord.Embed(
+        title=f"👤 {player['name']}",
+        description=(
+            f"**Team:** {team_display}\n"
+            f"**Position:** {player['position']}\n"
+            f"**Jersey:** {player['jersey'] if player['jersey'] else 'N/A'}"
+        ),
+        color=0x7A5C2E,
+    )
+
+    if player.get("headshot"):
+        embed.set_thumbnail(url=player["headshot"])
+    elif TEAM_LOGOS.get(player["team"]):
+        embed.set_thumbnail(url=TEAM_LOGOS[player["team"]])
+
+    source_label = player.get("profile_source", "Source unavailable")
+    if player.get("team_logo"):
+        embed.set_footer(text=f"USO NFL Bot • Profile source: {source_label}", icon_url=player["team_logo"])
+    else:
+        embed.set_footer(text=f"USO NFL Bot • Profile source: {source_label}")
+
+    statistics = overview.get("statistics", []) or overview.get("stats", [])
+    added = 0
+
+    for section in statistics[:8]:
+        label = section.get("displayName") or section.get("name") or "Stats"
+        stats = section.get("stats", [])
+        lines = []
+
+        for stat in stats[:6]:
+            if isinstance(stat, dict):
+                stat_name = stat.get("displayName") or stat.get("name")
+                stat_value = stat.get("displayValue") or stat.get("value")
+                if stat_name and stat_value is not None:
+                    lines.append(f"**{stat_name}:** {stat_value}")
+
+        if lines:
+            embed.add_field(name=label[:256], value="\n".join(lines)[:1024], inline=False)
+            added += 1
+
+        if added >= 4:
+            break
+
+    if added == 0:
+        embed.add_field(name="Stats", value="Stats unavailable right now.", inline=False)
+
+    return embed
+
+
+def extract_gamelog_entries(gamelog: dict) -> list[dict]:
+    entries = []
+
+    if "events" in gamelog and isinstance(gamelog["events"], list):
+        for event in gamelog["events"]:
+            opponent = event.get("opponent", {}).get("displayName", "Opponent")
+            date = event.get("date", "Game")
+            stats = event.get("stats", [])
+            stat_parts = []
+
+            for s in stats[:6]:
+                if isinstance(s, dict):
+                    n = s.get("displayName") or s.get("name")
+                    v = s.get("displayValue") or s.get("value")
+                    if n and v is not None:
+                        stat_parts.append(f"{n}: {v}")
+
+            entries.append({
+                "title": f"{date} vs {opponent}",
+                "value": " • ".join(stat_parts) if stat_parts else "No stats available"
+            })
+
+    if not entries:
+        entries.append({
+            "title": "Game Log",
+            "value": "Game log came back in a different format or wasn’t available."
+        })
+
+    return entries
+
+
+class GameLogView(discord.ui.View):
+    def __init__(self, player: dict, entries: list[dict]):
+        super().__init__(timeout=180)
+        self.player = player
+        self.entries = entries
+        self.page = 0
+
+    def build_embed(self) -> discord.Embed:
+        current = self.entries[self.page]
+        team_display = TEAM_NAMES.get(self.player["team"], self.player["team"])
+
+        embed = discord.Embed(
+            title=f"📋 {self.player['name']} Game Log",
+            description=(
+                f"**Team:** {team_display}\n"
+                f"**Position:** {self.player['position']}\n"
+                f"**Jersey:** {self.player['jersey'] if self.player['jersey'] else 'N/A'}"
+            ),
+            color=0x7A5C2E,
+        )
+
+        if self.player.get("headshot"):
+            embed.set_thumbnail(url=self.player["headshot"])
+        elif TEAM_LOGOS.get(self.player["team"]):
+            embed.set_thumbnail(url=TEAM_LOGOS[self.player["team"]])
+
+        source_label = self.player.get("profile_source", "Source unavailable")
+        embed.add_field(name=current["title"][:256], value=current["value"][:1024], inline=False)
+        embed.set_footer(text=f"Game {self.page + 1}/{len(self.entries)} • Profile source: {source_label}")
+        return embed
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page > 0:
+            self.page -= 1
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.page < len(self.entries) - 1:
+            self.page += 1
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+
+async def player_name_autocomplete(
+    interaction: discord.Interaction,
+    current: str
+) -> list[app_commands.Choice[str]]:
+    matches = search_players(current, limit=25)
+    return [app_commands.Choice(name=p["label"][:100], value=p["name"]) for p in matches]
+
+
+async def upsert_message(channel_id: int, message_id: int | None, embed: discord.Embed) -> int | None:
+    if not channel_id:
+        return message_id
+
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        return message_id
+
+    if message_id:
+        try:
+            msg = await channel.fetch_message(message_id)
+            await msg.edit(embed=embed)
+            return msg.id
+        except discord.NotFound:
+            pass
+
+    msg = await channel.send(embed=embed)
+    return msg.id
+
+
+@tasks.loop(seconds=45)
+async def scores_loop():
+    global scores_message_id, previous_scores
+
+    games = await get_live_scoreboard()
+    scores_message_id = await upsert_message(
+        SCORES_CHANNEL_ID,
+        scores_message_id,
+        build_scoreboard_embed(games),
+    )
+
+    if not ALERTS_CHANNEL_ID:
+        return
+
+    alerts_channel = bot.get_channel(ALERTS_CHANNEL_ID)
+    if alerts_channel is None:
+        return
+
+    for game in games:
+        key = game["id"]
+        current = (game["away_score"], game["home_score"], game["state"])
+        old = previous_scores.get(key)
+
+        if old and old[:2] != current[:2]:
+            await alerts_channel.send(
+                f"🚨 Score Update: {game['away_team']} {game['away_score']} - "
+                f"{game['home_team']} {game['home_score']} ({game['state']})"
+            )
+
+        if old and old[2] != current[2] and "Final" in game["state"]:
+            await alerts_channel.send(
+                f"✅ Final: {game['away_team']} {game['away_score']} - "
+                f"{game['home_team']} {game['home_score']}"
+            )
+
+        previous_scores[key] = current
+
+
+@tasks.loop(minutes=10)
+async def news_loop():
+    global news_message_id
+    items = await get_news_items()
+    news_message_id = await upsert_message(
+        NEWS_CHANNEL_ID,
+        news_message_id,
+        build_news_embed(items),
+    )
+
+
+@bot.tree.command(name="scoreboard", description="Show all live NFL scores for the current week")
+async def scoreboard(interaction: discord.Interaction):
+    await interaction.response.defer()
+    games = await get_live_scoreboard()
+    embed = build_scoreboard_embed(games)
+    await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="gamestats", description="Show stat leaders for a live game")
+@app_commands.describe(team="Team abbreviation like KC, DAL, SF, BUF")
+async def gamestats(interaction: discord.Interaction, team: str):
+    await interaction.response.defer()
+    team = team.upper().strip()
+
+    games = await get_live_scoreboard()
+    target = next((g for g in games if team in (g["away_team"], g["home_team"])), None)
+
+    if target is None:
+        await interaction.followup.send(f"No live or listed game found for `{team}`.")
+        return
+
+    summary = await get_game_summary(target["id"])
+    await interaction.followup.send(embed=build_game_stats_embed(target["name"], summary))
+
+
+@bot.tree.command(name="playerstats", description="Search a player by name and show stats")
+@app_commands.describe(name="Start typing a player name")
+@app_commands.autocomplete(name=player_name_autocomplete)
+async def playerstats(interaction: discord.Interaction, name: str):
+    await interaction.response.defer()
+
+    player = resolve_player_by_name(name)
+    if player is None:
+        await interaction.followup.send(f"No player found for `{name}`.")
+        return
+
+    overview = await get_player_overview(player["id"])
+    enriched_player = await enrich_player_profile_with_ai(player, overview)
+    await interaction.followup.send(embed=build_player_stats_embed(enriched_player, overview))
+
+
+@bot.tree.command(name="gamelog", description="Search a player by name and show game log")
+@app_commands.describe(name="Start typing a player name")
+@app_commands.autocomplete(name=player_name_autocomplete)
+async def gamelog(interaction: discord.Interaction, name: str):
+    await interaction.response.defer()
+
+    player = resolve_player_by_name(name)
+    if player is None:
+        await interaction.followup.send(f"No player found for `{name}`.")
+        return
+
+    overview = await get_player_overview(player["id"])
+    enriched_player = await enrich_player_profile_with_ai(player, overview)
+    gamelog_data = await get_player_gamelog(player["id"])
+    entries = extract_gamelog_entries(gamelog_data)
+    view = GameLogView(enriched_player, entries)
+    await interaction.followup.send(embed=view.build_embed(), view=view)
+
+
+@bot.tree.command(name="headlines", description="Show latest NFL headlines")
+async def headlines(interaction: discord.Interaction):
+    await interaction.response.defer()
+    items = await get_news_items()
+    await interaction.followup.send(embed=build_news_embed(items))
+
+
+@bot.tree.command(name="recenttrades", description="Show recent NFL trade headlines")
+async def recenttrades(interaction: discord.Interaction):
+    await interaction.response.defer()
+    items = await get_recent_trade_articles()
+    await interaction.followup.send(embed=build_recent_trades_embed(items))
+
+
+@bot.tree.command(name="tradetracker", description="Show categorized NFL trade headlines")
+async def tradetracker(interaction: discord.Interaction):
+    await interaction.response.defer()
+    sections = await get_trade_tracker_sections()
+    await interaction.followup.send(embed=build_trade_tracker_embed(sections))
+
+
+@bot.event
+async def on_ready():
+    global session
+
+    if session is None:
+        session = aiohttp.ClientSession()
+
+    if not PLAYER_INDEX:
+        try:
+            await build_player_index()
+            print(f"Loaded {len(PLAYER_INDEX)} players.")
+        except Exception as e:
+            print(f"Could not load player index: {e}")
+
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} slash commands.")
+    except Exception as e:
+        print(f"Command sync error: {e}")
+
+    if not scores_loop.is_running():
+        scores_loop.start()
+
+    if not news_loop.is_running():
+        news_loop.start()
+
+    print(f"BOT READY - Logged in as {bot.user}")
+
+
+async def shutdown_session():
+    global session
+    if session and not session.closed:
+        await session.close()
+
+
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN is missing. Add it in Replit Secrets.")
+
+try:
+    bot.run(TOKEN)
+finally:
+    import asyncio
+    asyncio.run(shutdown_session())

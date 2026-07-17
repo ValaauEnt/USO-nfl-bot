@@ -1456,6 +1456,126 @@ async def leagueleaders(interaction: discord.Interaction):
     await interaction.followup.send(embed=view.build_embed(), view=view)
 
 
+def owner_only_check(interaction: discord.Interaction) -> bool:
+    return interaction.guild is not None and interaction.user.id == interaction.guild.owner_id
+
+
+@bot.tree.command(name="create-channel", description="Create a new text or voice channel [Owner only]")
+@app_commands.describe(
+    name="Channel name",
+    kind="text or voice",
+    category="Category name to place the channel in (optional)",
+)
+async def create_channel(interaction: discord.Interaction, name: str, kind: str = "text", category: str = ""):
+    if not owner_only_check(interaction):
+        await interaction.response.send_message("❌ Only the server owner can use this command.", ephemeral=True)
+        return
+
+    guild = interaction.guild
+    kind = kind.lower().strip()
+
+    target_category = None
+    if category:
+        target_category = discord.utils.get(guild.categories, name=category)
+        if target_category is None:
+            await interaction.response.send_message(f"❌ Category `{category}` not found.", ephemeral=True)
+            return
+
+    try:
+        if kind == "voice":
+            ch = await guild.create_voice_channel(name=name, category=target_category)
+            ch_type = "🔊 Voice"
+        else:
+            ch = await guild.create_text_channel(name=name, category=target_category)
+            ch_type = "💬 Text"
+
+        embed = discord.Embed(
+            title="✅ Channel Created",
+            description=f"{ch_type} channel {ch.mention} has been created.",
+            color=0x7A5C2E,
+        )
+        embed.set_footer(text="USO Bot • Server Management")
+        await interaction.response.send_message(embed=embed)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ I don't have permission to create channels. Make sure I have the **Manage Channels** permission.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="delete-channel", description="Delete a channel by name [Owner only]")
+@app_commands.describe(name="Exact name of the channel to delete")
+async def delete_channel(interaction: discord.Interaction, name: str):
+    if not owner_only_check(interaction):
+        await interaction.response.send_message("❌ Only the server owner can use this command.", ephemeral=True)
+        return
+
+    guild = interaction.guild
+    channel = discord.utils.get(guild.channels, name=name)
+
+    if channel is None:
+        await interaction.response.send_message(f"❌ No channel named `{name}` found.", ephemeral=True)
+        return
+
+    try:
+        await channel.delete()
+        embed = discord.Embed(
+            title="🗑️ Channel Deleted",
+            description=f"Channel **#{name}** has been deleted.",
+            color=0x7A5C2E,
+        )
+        embed.set_footer(text="USO Bot • Server Management")
+        await interaction.response.send_message(embed=embed)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ I don't have permission to delete channels. Make sure I have the **Manage Channels** permission.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="rename-server", description="Rename the server [Owner only]")
+@app_commands.describe(name="New server name")
+async def rename_server(interaction: discord.Interaction, name: str):
+    if not owner_only_check(interaction):
+        await interaction.response.send_message("❌ Only the server owner can use this command.", ephemeral=True)
+        return
+
+    try:
+        old_name = interaction.guild.name
+        await interaction.guild.edit(name=name)
+        embed = discord.Embed(
+            title="✅ Server Renamed",
+            description=f"**{old_name}** → **{name}**",
+            color=0x7A5C2E,
+        )
+        embed.set_footer(text="USO Bot • Server Management")
+        await interaction.response.send_message(embed=embed)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ I don't have permission to rename the server. Make sure I have the **Manage Server** permission.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="create-category", description="Create a new channel category [Owner only]")
+@app_commands.describe(name="Category name")
+async def create_category(interaction: discord.Interaction, name: str):
+    if not owner_only_check(interaction):
+        await interaction.response.send_message("❌ Only the server owner can use this command.", ephemeral=True)
+        return
+
+    try:
+        cat = await interaction.guild.create_category(name=name)
+        embed = discord.Embed(
+            title="✅ Category Created",
+            description=f"Category **{cat.name}** has been created.",
+            color=0x7A5C2E,
+        )
+        embed.set_footer(text="USO Bot • Server Management")
+        await interaction.response.send_message(embed=embed)
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ I don't have permission to create categories. Make sure I have the **Manage Channels** permission.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+
+
 @bot.event
 async def on_ready():
     global session

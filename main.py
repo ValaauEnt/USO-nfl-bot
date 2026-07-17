@@ -1491,7 +1491,7 @@ async def on_ready():
 TOS_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>USO NFL Bot — Terms of Service</title>
+<title>USO Bot — Terms of Service</title>
 <style>
   body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.7}
   h1{color:#7A5C2E}h2{color:#333;margin-top:2em}
@@ -1499,14 +1499,14 @@ TOS_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>🏈 USO NFL Bot — Terms of Service</h1>
+<h1>🏈 USO Bot — Terms of Service</h1>
 <p><strong>Last updated: July 2025</strong></p>
 
 <h2>1. Acceptance</h2>
-<p>By adding USO NFL Bot to your Discord server or using any of its commands, you agree to these Terms of Service. If you do not agree, do not use the bot.</p>
+<p>By adding USO Bot to your Discord server or using any of its commands, you agree to these Terms of Service. If you do not agree, do not use the bot.</p>
 
 <h2>2. Description of Service</h2>
-<p>USO NFL Bot provides NFL-related information including live scores, player statistics, trade headlines, and league leaders. All data is sourced from publicly available APIs (primarily ESPN). The bot does not guarantee the accuracy, completeness, or timeliness of any information provided.</p>
+<p>USO Bot provides NFL-related information including live scores, player statistics, trade headlines, and league leaders. All data is sourced from publicly available APIs (primarily ESPN). The bot does not guarantee the accuracy, completeness, or timeliness of any information provided.</p>
 
 <h2>3. Acceptable Use</h2>
 <p>You agree not to:</p>
@@ -1517,14 +1517,14 @@ TOS_HTML = """<!DOCTYPE html>
   <li>Reverse engineer or attempt to extract source code through the bot's interface</li>
 </ul>
 
-<h2>4. Data & Privacy</h2>
-<p>USO NFL Bot does not collect, store, or share personal data about users. Commands are processed in real time and no message content or user identifiers are retained. See our <a href="/privacy">Privacy Policy</a> for details.</p>
+<h2>4. Data &amp; Privacy</h2>
+<p>USO Bot does not collect, store, or share personal data about users. Commands are processed in real time and no message content or user identifiers are retained. See our <a href="/privacy">Privacy Policy</a> for details.</p>
 
 <h2>5. Disclaimer of Warranties</h2>
 <p>The bot is provided "as is" without warranty of any kind. We make no guarantees regarding uptime, data accuracy, or fitness for a particular purpose. NFL statistics and news are provided for informational purposes only.</p>
 
 <h2>6. Limitation of Liability</h2>
-<p>The creators of USO NFL Bot are not liable for any direct, indirect, incidental, or consequential damages arising from your use of the bot.</p>
+<p>The creators of USO Bot are not liable for any direct, indirect, incidental, or consequential damages arising from your use of the bot.</p>
 
 <h2>7. Changes to Terms</h2>
 <p>These terms may be updated at any time. Continued use of the bot after changes constitutes acceptance of the revised terms.</p>
@@ -1532,14 +1532,14 @@ TOS_HTML = """<!DOCTYPE html>
 <h2>8. Contact</h2>
 <p>For questions or concerns, please reach out through your Discord server's administration.</p>
 
-<footer>USO NFL Bot &mdash; Unofficial. Not affiliated with the NFL or ESPN.</footer>
+<footer>USO Bot &mdash; Unofficial. Not affiliated with the NFL or ESPN.</footer>
 </body>
 </html>"""
 
 PRIVACY_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>USO NFL Bot — Privacy Policy</title>
+<title>USO Bot — Privacy Policy</title>
 <style>
   body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.7}
   h1{color:#7A5C2E}h2{color:#333;margin-top:2em}
@@ -1547,11 +1547,11 @@ PRIVACY_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>🏈 USO NFL Bot — Privacy Policy</h1>
+<h1>🏈 USO Bot — Privacy Policy</h1>
 <p><strong>Last updated: July 2025</strong></p>
 
 <h2>1. Information We Collect</h2>
-<p>USO NFL Bot does <strong>not</strong> collect or store any personal information. Specifically:</p>
+<p>USO Bot does <strong>not</strong> collect or store any personal information. Specifically:</p>
 <ul>
   <li>We do not log Discord usernames, IDs, or message content</li>
   <li>We do not store command history or usage data</li>
@@ -1573,7 +1573,7 @@ PRIVACY_HTML = """<!DOCTYPE html>
 <h2>6. Contact</h2>
 <p>Questions about this policy can be directed to your server's administration.</p>
 
-<footer>USO NFL Bot &mdash; Unofficial. Not affiliated with the NFL or ESPN.</footer>
+<footer>USO Bot &mdash; Unofficial. Not affiliated with the NFL or ESPN.</footer>
 </body>
 </html>"""
 

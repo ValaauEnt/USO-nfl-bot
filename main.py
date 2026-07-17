@@ -1482,6 +1482,7 @@ async def create_channel(
     kind: str = "text",
     category: discord.CategoryChannel | None = None,
 ):
+    await interaction.response.defer()
     kind = kind.lower().strip()
     try:
         if kind == "voice":
@@ -1498,11 +1499,11 @@ async def create_channel(
             color=0x7A5C2E,
         )
         embed.set_footer(text="USO Bot • Server Management")
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
     except discord.Forbidden:
-        await interaction.response.send_message("❌ I don't have permission to create channels. Make sure I have the **Manage Channels** permission.", ephemeral=True)
+        await interaction.followup.send("❌ I don't have permission to create channels. Make sure I have the **Manage Channels** permission.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 
 @bot.tree.command(name="delete-channel", description="Delete an existing channel [Admin only]")
@@ -1512,6 +1513,7 @@ async def delete_channel(
     interaction: discord.Interaction,
     channel: discord.TextChannel | discord.VoiceChannel | discord.StageChannel | discord.CategoryChannel | discord.ForumChannel,
 ):
+    await interaction.response.defer()
     name = channel.name
     try:
         await channel.delete()
@@ -1521,17 +1523,18 @@ async def delete_channel(
             color=0x7A5C2E,
         )
         embed.set_footer(text="USO Bot • Server Management")
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
     except discord.Forbidden:
-        await interaction.response.send_message("❌ I don't have permission to delete channels. Make sure I have the **Manage Channels** permission.", ephemeral=True)
+        await interaction.followup.send("❌ I don't have permission to delete channels. Make sure I have the **Manage Channels** permission.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 
 @bot.tree.command(name="rename-server", description="Rename the server [Admin only]")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(name="New server name")
 async def rename_server(interaction: discord.Interaction, name: str):
+    await interaction.response.defer()
     try:
         old_name = interaction.guild.name
         await interaction.guild.edit(name=name)
@@ -1541,17 +1544,18 @@ async def rename_server(interaction: discord.Interaction, name: str):
             color=0x7A5C2E,
         )
         embed.set_footer(text="USO Bot • Server Management")
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
     except discord.Forbidden:
-        await interaction.response.send_message("❌ I don't have permission to rename the server. Make sure I have the **Manage Server** permission.", ephemeral=True)
+        await interaction.followup.send("❌ I don't have permission to rename the server. Make sure I have the **Manage Server** permission.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 
 @bot.tree.command(name="create-category", description="Create a new channel category [Admin only]")
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(name="Category name")
 async def create_category(interaction: discord.Interaction, name: str):
+    await interaction.response.defer()
     try:
         cat = await interaction.guild.create_category(name=name)
         embed = discord.Embed(
@@ -1560,11 +1564,11 @@ async def create_category(interaction: discord.Interaction, name: str):
             color=0x7A5C2E,
         )
         embed.set_footer(text="USO Bot • Server Management")
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
     except discord.Forbidden:
-        await interaction.response.send_message("❌ I don't have permission to create categories. Make sure I have the **Manage Channels** permission.", ephemeral=True)
+        await interaction.followup.send("❌ I don't have permission to create categories. Make sure I have the **Manage Channels** permission.", ephemeral=True)
     except Exception as e:
-        await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
+        await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 
 @bot.event

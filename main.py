@@ -1464,34 +1464,32 @@ def owner_only_check(interaction: discord.Interaction) -> bool:
 @app_commands.describe(
     name="Channel name",
     kind="text or voice",
-    category="Category name to place the channel in (optional)",
+    category="Pick an existing category to place the channel in (optional)",
 )
-async def create_channel(interaction: discord.Interaction, name: str, kind: str = "text", category: str = ""):
+async def create_channel(
+    interaction: discord.Interaction,
+    name: str,
+    kind: str = "text",
+    category: discord.CategoryChannel | None = None,
+):
     if not owner_only_check(interaction):
         await interaction.response.send_message("❌ Only the server owner can use this command.", ephemeral=True)
         return
 
-    guild = interaction.guild
     kind = kind.lower().strip()
-
-    target_category = None
-    if category:
-        target_category = discord.utils.get(guild.categories, name=category)
-        if target_category is None:
-            await interaction.response.send_message(f"❌ Category `{category}` not found.", ephemeral=True)
-            return
 
     try:
         if kind == "voice":
-            ch = await guild.create_voice_channel(name=name, category=target_category)
+            ch = await interaction.guild.create_voice_channel(name=name, category=category)
             ch_type = "🔊 Voice"
         else:
-            ch = await guild.create_text_channel(name=name, category=target_category)
+            ch = await interaction.guild.create_text_channel(name=name, category=category)
             ch_type = "💬 Text"
 
+        loc = f" in **{category.name}**" if category else ""
         embed = discord.Embed(
             title="✅ Channel Created",
-            description=f"{ch_type} channel {ch.mention} has been created.",
+            description=f"{ch_type} channel {ch.mention} has been created{loc}.",
             color=0x7A5C2E,
         )
         embed.set_footer(text="USO Bot • Server Management")
@@ -1502,20 +1500,14 @@ async def create_channel(interaction: discord.Interaction, name: str, kind: str 
         await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="delete-channel", description="Delete a channel by name [Owner only]")
-@app_commands.describe(name="Exact name of the channel to delete")
-async def delete_channel(interaction: discord.Interaction, name: str):
+@bot.tree.command(name="delete-channel", description="Delete an existing channel [Owner only]")
+@app_commands.describe(channel="Pick the channel to delete")
+async def delete_channel(interaction: discord.Interaction, channel: discord.abc.GuildChannel):
     if not owner_only_check(interaction):
         await interaction.response.send_message("❌ Only the server owner can use this command.", ephemeral=True)
         return
 
-    guild = interaction.guild
-    channel = discord.utils.get(guild.channels, name=name)
-
-    if channel is None:
-        await interaction.response.send_message(f"❌ No channel named `{name}` found.", ephemeral=True)
-        return
-
+    name = channel.name
     try:
         await channel.delete()
         embed = discord.Embed(

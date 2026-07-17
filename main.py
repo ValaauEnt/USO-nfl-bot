@@ -1464,11 +1464,10 @@ def admin_check(interaction: discord.Interaction) -> bool:
     member = interaction.guild.get_member(interaction.user.id)
     if member is None:
         return False
-    return member.guild_permissions.administrator
+    return any(r.name.lower() == "admin" for r in member.roles)
 
 
 @bot.tree.command(name="create-channel", description="Create a new text or voice channel [Admin only]")
-@app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     name="Channel name",
     kind="text or voice",
@@ -1480,6 +1479,9 @@ async def create_channel(
     kind: str = "text",
     category: discord.CategoryChannel | None = None,
 ):
+    if not admin_check(interaction):
+        await interaction.response.send_message("❌ You need the **Admin** role to use this command.", ephemeral=True)
+        return
     kind = kind.lower().strip()
     try:
         if kind == "voice":
@@ -1504,12 +1506,14 @@ async def create_channel(
 
 
 @bot.tree.command(name="delete-channel", description="Delete an existing channel [Admin only]")
-@app_commands.default_permissions(administrator=True)
 @app_commands.describe(channel="Pick the channel to delete")
 async def delete_channel(
     interaction: discord.Interaction,
     channel: discord.TextChannel | discord.VoiceChannel | discord.StageChannel | discord.CategoryChannel | discord.ForumChannel,
 ):
+    if not admin_check(interaction):
+        await interaction.response.send_message("❌ You need the **Admin** role to use this command.", ephemeral=True)
+        return
     name = channel.name
     try:
         await channel.delete()
@@ -1527,9 +1531,11 @@ async def delete_channel(
 
 
 @bot.tree.command(name="rename-server", description="Rename the server [Admin only]")
-@app_commands.default_permissions(administrator=True)
 @app_commands.describe(name="New server name")
 async def rename_server(interaction: discord.Interaction, name: str):
+    if not admin_check(interaction):
+        await interaction.response.send_message("❌ You need the **Admin** role to use this command.", ephemeral=True)
+        return
     try:
         old_name = interaction.guild.name
         await interaction.guild.edit(name=name)
@@ -1547,10 +1553,11 @@ async def rename_server(interaction: discord.Interaction, name: str):
 
 
 @bot.tree.command(name="create-category", description="Create a new channel category [Admin only]")
-@app_commands.default_permissions(administrator=True)
 @app_commands.describe(name="Category name")
 async def create_category(interaction: discord.Interaction, name: str):
-
+    if not admin_check(interaction):
+        await interaction.response.send_message("❌ You need the **Admin** role to use this command.", ephemeral=True)
+        return
     try:
         cat = await interaction.guild.create_category(name=name)
         embed = discord.Embed(

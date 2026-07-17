@@ -1461,7 +1461,9 @@ def admin_check(interaction: discord.Interaction) -> bool:
         return False
     if interaction.user.id == interaction.guild.owner_id:
         return True
-    member = interaction.guild.get_member(interaction.user.id)
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        member = interaction.guild.get_member(interaction.user.id)
     if member is None:
         return False
     return any(r.name.lower() == "admin" for r in member.roles)

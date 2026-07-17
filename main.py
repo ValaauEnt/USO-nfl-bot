@@ -1459,10 +1459,12 @@ async def leagueleaders(interaction: discord.Interaction):
 def admin_check(interaction: discord.Interaction) -> bool:
     if interaction.guild is None:
         return False
-    member = interaction.user
-    return interaction.user.id == interaction.guild.owner_id or (
-        isinstance(member, discord.Member) and member.guild_permissions.administrator
-    )
+    if interaction.user.id == interaction.guild.owner_id:
+        return True
+    member = interaction.guild.get_member(interaction.user.id)
+    if member is None:
+        return False
+    return member.guild_permissions.administrator
 
 
 @bot.tree.command(name="create-channel", description="Create a new text or voice channel [Admin only]")

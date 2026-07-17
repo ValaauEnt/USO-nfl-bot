@@ -1,7 +1,9 @@
 import os
 import re
 import html
+import asyncio
 import aiohttp
+from aiohttp import web as aiohttp_web
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -1486,17 +1488,135 @@ async def on_ready():
     print(f"BOT READY - Logged in as {bot.user}")
 
 
-async def shutdown_session():
+TOS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>USO NFL Bot — Terms of Service</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.7}
+  h1{color:#7A5C2E}h2{color:#333;margin-top:2em}
+  footer{margin-top:3em;font-size:.85em;color:#888}
+</style>
+</head>
+<body>
+<h1>🏈 USO NFL Bot — Terms of Service</h1>
+<p><strong>Last updated: July 2025</strong></p>
+
+<h2>1. Acceptance</h2>
+<p>By adding USO NFL Bot to your Discord server or using any of its commands, you agree to these Terms of Service. If you do not agree, do not use the bot.</p>
+
+<h2>2. Description of Service</h2>
+<p>USO NFL Bot provides NFL-related information including live scores, player statistics, trade headlines, and league leaders. All data is sourced from publicly available APIs (primarily ESPN). The bot does not guarantee the accuracy, completeness, or timeliness of any information provided.</p>
+
+<h2>3. Acceptable Use</h2>
+<p>You agree not to:</p>
+<ul>
+  <li>Use the bot for any unlawful purpose</li>
+  <li>Attempt to exploit, abuse, or disrupt the bot or its hosting infrastructure</li>
+  <li>Use the bot to harass or harm others</li>
+  <li>Reverse engineer or attempt to extract source code through the bot's interface</li>
+</ul>
+
+<h2>4. Data & Privacy</h2>
+<p>USO NFL Bot does not collect, store, or share personal data about users. Commands are processed in real time and no message content or user identifiers are retained. See our <a href="/privacy">Privacy Policy</a> for details.</p>
+
+<h2>5. Disclaimer of Warranties</h2>
+<p>The bot is provided "as is" without warranty of any kind. We make no guarantees regarding uptime, data accuracy, or fitness for a particular purpose. NFL statistics and news are provided for informational purposes only.</p>
+
+<h2>6. Limitation of Liability</h2>
+<p>The creators of USO NFL Bot are not liable for any direct, indirect, incidental, or consequential damages arising from your use of the bot.</p>
+
+<h2>7. Changes to Terms</h2>
+<p>These terms may be updated at any time. Continued use of the bot after changes constitutes acceptance of the revised terms.</p>
+
+<h2>8. Contact</h2>
+<p>For questions or concerns, please reach out through your Discord server's administration.</p>
+
+<footer>USO NFL Bot &mdash; Unofficial. Not affiliated with the NFL or ESPN.</footer>
+</body>
+</html>"""
+
+PRIVACY_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>USO NFL Bot — Privacy Policy</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.7}
+  h1{color:#7A5C2E}h2{color:#333;margin-top:2em}
+  footer{margin-top:3em;font-size:.85em;color:#888}
+</style>
+</head>
+<body>
+<h1>🏈 USO NFL Bot — Privacy Policy</h1>
+<p><strong>Last updated: July 2025</strong></p>
+
+<h2>1. Information We Collect</h2>
+<p>USO NFL Bot does <strong>not</strong> collect or store any personal information. Specifically:</p>
+<ul>
+  <li>We do not log Discord usernames, IDs, or message content</li>
+  <li>We do not store command history or usage data</li>
+  <li>We do not use cookies or tracking technologies</li>
+</ul>
+
+<h2>2. How the Bot Works</h2>
+<p>When you use a slash command, the bot fetches data from third-party sports APIs (such as ESPN) and returns it directly to your Discord channel. No data from your request is retained after the response is sent.</p>
+
+<h2>3. Third-Party Services</h2>
+<p>The bot retrieves data from ESPN's public APIs and may fall back to NFL.com or Yahoo Sports. Your use of this bot is also subject to Discord's <a href="https://discord.com/privacy" target="_blank">Privacy Policy</a>.</p>
+
+<h2>4. Children's Privacy</h2>
+<p>This bot is not directed at children under 13. We do not knowingly collect information from children.</p>
+
+<h2>5. Changes</h2>
+<p>This policy may be updated periodically. Continued use of the bot constitutes acceptance of any changes.</p>
+
+<h2>6. Contact</h2>
+<p>Questions about this policy can be directed to your server's administration.</p>
+
+<footer>USO NFL Bot &mdash; Unofficial. Not affiliated with the NFL or ESPN.</footer>
+</body>
+</html>"""
+
+
+async def handle_tos(request):
+    return aiohttp_web.Response(text=TOS_HTML, content_type="text/html")
+
+
+async def handle_privacy(request):
+    return aiohttp_web.Response(text=PRIVACY_HTML, content_type="text/html")
+
+
+async def handle_root(request):
+    return aiohttp_web.Response(text="<h2>USO NFL Bot is running.</h2>", content_type="text/html")
+
+
+async def run_web_server():
+    app = aiohttp_web.Application()
+    app.router.add_get("/", handle_root)
+    app.router.add_get("/tos", handle_tos)
+    app.router.add_get("/privacy", handle_privacy)
+    runner = aiohttp_web.AppRunner(app)
+    await runner.setup()
+    site = aiohttp_web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
+
+
+async def main():
     global session
-    if session and not session.closed:
-        await session.close()
+    session = aiohttp.ClientSession()
+    await run_web_server()
+    async with bot:
+        await bot.start(TOKEN)
 
 
 if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN is missing. Add it in Replit Secrets.")
 
 try:
-    bot.run(TOKEN)
+    asyncio.run(main())
 finally:
-    import asyncio
-    asyncio.run(shutdown_session())
+    async def _close():
+        global session
+        if session and not session.closed:
+            await session.close()
+    asyncio.run(_close())

@@ -1507,7 +1507,10 @@ async def create_channel(
 
 @bot.tree.command(name="delete-channel", description="Delete an existing channel [Admin only]")
 @app_commands.describe(channel="Pick the channel to delete")
-async def delete_channel(interaction: discord.Interaction, channel: discord.abc.GuildChannel):
+async def delete_channel(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel | discord.VoiceChannel | discord.StageChannel | discord.CategoryChannel | discord.ForumChannel,
+):
     if not admin_check(interaction):
         await interaction.response.send_message("❌ You need Administrator permission to use this command.", ephemeral=True)
         return
@@ -1603,6 +1606,24 @@ async def on_ready():
         nflwatch_loop.start()
 
     print(f"BOT READY - Logged in as {bot.user}")
+
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    msg = "❌ Something went wrong. Please try again."
+    if isinstance(error, app_commands.MissingPermissions):
+        msg = "❌ You don't have permission to use this command."
+    elif isinstance(error, app_commands.BotMissingPermissions):
+        msg = f"❌ I'm missing permissions: {', '.join(error.missing_permissions)}"
+    elif isinstance(error, app_commands.CommandInvokeError):
+        msg = f"❌ Error: {error.original}"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        pass
 
 
 TOS_HTML = """<!DOCTYPE html>

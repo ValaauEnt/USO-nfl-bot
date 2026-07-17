@@ -1456,11 +1456,16 @@ async def leagueleaders(interaction: discord.Interaction):
     await interaction.followup.send(embed=view.build_embed(), view=view)
 
 
-def owner_only_check(interaction: discord.Interaction) -> bool:
-    return interaction.guild is not None and interaction.user.id == interaction.guild.owner_id
+def admin_check(interaction: discord.Interaction) -> bool:
+    if interaction.guild is None:
+        return False
+    member = interaction.user
+    return interaction.user.id == interaction.guild.owner_id or (
+        isinstance(member, discord.Member) and member.guild_permissions.administrator
+    )
 
 
-@bot.tree.command(name="create-channel", description="Create a new text or voice channel [Owner only]")
+@bot.tree.command(name="create-channel", description="Create a new text or voice channel [Admin only]")
 @app_commands.describe(
     name="Channel name",
     kind="text or voice",
@@ -1472,8 +1477,8 @@ async def create_channel(
     kind: str = "text",
     category: discord.CategoryChannel | None = None,
 ):
-    if not owner_only_check(interaction):
-        await interaction.response.send_message("❌ Only the server owner can use this command.", ephemeral=True)
+    if not admin_check(interaction):
+        await interaction.response.send_message("❌ You need Administrator permission to use this command.", ephemeral=True)
         return
 
     kind = kind.lower().strip()
@@ -1500,11 +1505,11 @@ async def create_channel(
         await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="delete-channel", description="Delete an existing channel [Owner only]")
+@bot.tree.command(name="delete-channel", description="Delete an existing channel [Admin only]")
 @app_commands.describe(channel="Pick the channel to delete")
 async def delete_channel(interaction: discord.Interaction, channel: discord.abc.GuildChannel):
-    if not owner_only_check(interaction):
-        await interaction.response.send_message("❌ Only the server owner can use this command.", ephemeral=True)
+    if not admin_check(interaction):
+        await interaction.response.send_message("❌ You need Administrator permission to use this command.", ephemeral=True)
         return
 
     name = channel.name
@@ -1523,11 +1528,11 @@ async def delete_channel(interaction: discord.Interaction, channel: discord.abc.
         await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="rename-server", description="Rename the server [Owner only]")
+@bot.tree.command(name="rename-server", description="Rename the server [Admin only]")
 @app_commands.describe(name="New server name")
 async def rename_server(interaction: discord.Interaction, name: str):
-    if not owner_only_check(interaction):
-        await interaction.response.send_message("❌ Only the server owner can use this command.", ephemeral=True)
+    if not admin_check(interaction):
+        await interaction.response.send_message("❌ You need Administrator permission to use this command.", ephemeral=True)
         return
 
     try:
@@ -1546,11 +1551,11 @@ async def rename_server(interaction: discord.Interaction, name: str):
         await interaction.response.send_message(f"❌ Error: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="create-category", description="Create a new channel category [Owner only]")
+@bot.tree.command(name="create-category", description="Create a new channel category [Admin only]")
 @app_commands.describe(name="Category name")
 async def create_category(interaction: discord.Interaction, name: str):
-    if not owner_only_check(interaction):
-        await interaction.response.send_message("❌ Only the server owner can use this command.", ephemeral=True)
+    if not admin_check(interaction):
+        await interaction.response.send_message("❌ You need Administrator permission to use this command.", ephemeral=True)
         return
 
     try:

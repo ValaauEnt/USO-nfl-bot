@@ -2585,7 +2585,7 @@ async def run_web_server():
     app.router.add_get("/api/status", handle_api_status)
     runner = aiohttp_web.AppRunner(app)
     await runner.setup()
-    site = aiohttp_web.TCPSite(runner, "0.0.0.0", 8080)
+    site = aiohttp_web.TCPSite(runner, "0.0.0.0", 5000)
     await site.start()
 
 

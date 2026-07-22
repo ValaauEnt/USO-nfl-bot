@@ -330,10 +330,40 @@ async def get_news_items(limit: int = 5) -> list[dict]:
         items = []
         for article in data.get("articles", [])[:limit]:
             url = article.get("links", {}).get("web", {}).get("href", "")
+
+            # Pick best image: prefer non-motion (real photo) header image
+            image_url = ""
+            for img in article.get("images", []):
+                candidate = img.get("url", "")
+                if candidate and "/motion/" not in candidate:
+                    image_url = candidate
+                    break
+            if not image_url:
+                for img in article.get("images", []):
+                    candidate = img.get("url", "")
+                    if candidate:
+                        image_url = candidate
+                        break
+
+            # Video: grab first clip link if present
+            video_url = ""
+            for vid in article.get("video", []):
+                links = vid.get("links", {})
+                clip = (
+                    links.get("source", {}).get("HD", {}).get("href")
+                    or links.get("source", {}).get("full", {}).get("href")
+                    or links.get("web", {}).get("href")
+                )
+                if clip:
+                    video_url = clip
+                    break
+
             items.append({
                 "headline": article.get("headline", "No headline"),
                 "description": article.get("description", "No description"),
                 "url": url,
+                "image_url": image_url,
+                "video_url": video_url,
                 "source": "ESPN"
             })
         if items:
@@ -777,25 +807,59 @@ def build_scoreboard_embed(games: list[dict], meta: dict | None = None) -> disco
     return embed
 
 
-def build_news_embed(items: list[dict]) -> discord.Embed:
-    embed = discord.Embed(
-        title="📰 NFL Headlines",
-        description="Latest NFL headlines",
-        color=0x7A5C2E,
-    )
-
+def build_news_embeds(items: list[dict]) -> list[discord.Embed]:
+    """Return one Discord Embed per article with headline as title and photo/video attached."""
     if not items:
-        embed.add_field(name="No News", value="No headlines available.", inline=False)
-        return embed
+        embed = discord.Embed(
+            title="📰 NFL Headlines",
+            description="No headlines available right now.",
+            color=0x7A5C2E,
+        )
+        return [embed]
 
-    for item in items[:6]:
-        source = item.get("source", "Source")
-        link = f"[Read Article]({item['url']})" if item.get("url") else ""
-        desc = item.get("description", "")[:180]
-        value = f"{desc}\n{link}\n**Source:** {source}" if link else f"{desc}\n**Source:** {source}"
-        embed.add_field(name=item.get("headline", "Headline")[:256], value=value[:1024], inline=False)
+    embeds = []
+    for item in items[:10]:  # Discord max 10 embeds per message
+        headline = item.get("headline", "NFL News")
+        url = item.get("url", "")
+        source = item.get("source", "ESPN")
+        desc = item.get("description", "")[:300]
+        image_url = item.get("image_url", "")
+        video_url = item.get("video_url", "")
 
-    return embed
+        # Build description block
+        parts = []
+        if desc:
+            parts.append(desc)
+        if video_url:
+            parts.append(f"📹 [Watch Video]({video_url})")
+        if url:
+            parts.append(f"[Read Full Article]({url})  •  **{source}**")
+        else:
+            parts.append(f"**{source}**")
+
+        embed = discord.Embed(
+            title=headline[:256],
+            url=url or None,
+            description="\n".join(parts)[:4096],
+            color=0x7A5C2E,
+        )
+
+        if image_url:
+            embed.set_image(url=image_url)
+
+        embeds.append(embed)
+
+    # Add a shared footer on the last embed
+    if embeds:
+        embeds[-1].set_footer(text="USO NFL Bot • ESPN")
+
+    return embeds
+
+
+# Keep old single-embed builder for backward-compat with trade/market commands
+def build_news_embed(items: list[dict]) -> discord.Embed:
+    embeds = build_news_embeds(items)
+    return embeds[0] if embeds else discord.Embed(title="📰 NFL Headlines", color=0x7A5C2E)
 
 
 def build_trade_tracker_embed(sections: dict) -> discord.Embed:
@@ -1276,6 +1340,31 @@ async def upsert_message(channel_id: int, message_id: int | None, embed: discord
     return msg.id
 
 
+async def upsert_multi_embed_message(
+    channel_id: int, message_id: int | None, embeds: list[discord.Embed]
+) -> int | None:
+    """Send or edit a single Discord message containing multiple embeds (max 10)."""
+    if not channel_id:
+        return message_id
+
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        return message_id
+
+    embeds = embeds[:10]  # Discord hard cap
+
+    if message_id:
+        try:
+            msg = await channel.fetch_message(message_id)
+            await msg.edit(embeds=embeds)
+            return msg.id
+        except discord.NotFound:
+            pass
+
+    msg = await channel.send(embeds=embeds)
+    return msg.id
+
+
 @tasks.loop(seconds=45)
 async def scores_loop():
     global scores_message_id, previous_scores
@@ -1317,11 +1406,12 @@ async def scores_loop():
 @tasks.loop(minutes=10)
 async def news_loop():
     global news_message_id
-    items = await get_news_items()
-    news_message_id = await upsert_message(
+    items = await get_news_items(limit=8)
+    embeds = build_news_embeds(items)
+    news_message_id = await upsert_multi_embed_message(
         NEWS_CHANNEL_ID,
         news_message_id,
-        build_news_embed(items),
+        embeds,
     )
 
 

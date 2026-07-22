@@ -2124,21 +2124,34 @@ async def leagueleaders(interaction: discord.Interaction):
 
 _ADMIN_ROLE_NAMES = {"admin", "administrator"}
 
-def admin_check(interaction: discord.Interaction) -> bool:
+async def is_admin(interaction: discord.Interaction) -> bool:
     """Return True if the invoker is the server owner, has the Administrator
-    permission bit, or has a role whose name is 'admin' or 'administrator'."""
+    permission bit, or has a role whose name is 'admin' or 'administrator'
+    (case-insensitive).  Falls back to a live API fetch so roles are always
+    up-to-date even when the member isn't in the local cache."""
     if interaction.guild is None:
         return False
     if interaction.user.id == interaction.guild.owner_id:
         return True
-    member = interaction.user
-    if not isinstance(member, discord.Member):
+
+    # Prefer the Member already attached to the interaction (has roles from payload)
+    member = interaction.user if isinstance(interaction.user, discord.Member) else None
+
+    # Fall back to cache, then live fetch
+    if member is None:
         member = interaction.guild.get_member(interaction.user.id)
     if member is None:
-        return False
+        try:
+            member = await interaction.guild.fetch_member(interaction.user.id)
+        except Exception:
+            return False
+
     if member.guild_permissions.administrator:
         return True
-    return any(r.name.lower() in _ADMIN_ROLE_NAMES for r in member.roles)
+
+    role_names = {r.name.lower() for r in member.roles}
+    print(f"[admin_check] {member} roles: {role_names}")   # visible in workflow logs
+    return bool(role_names & _ADMIN_ROLE_NAMES)
 
 
 async def _deny_admin(interaction: discord.Interaction) -> None:
@@ -2163,7 +2176,7 @@ async def create_channel(
     category: discord.CategoryChannel | None = None,
 ):
     await interaction.response.defer()
-    if not admin_check(interaction):
+    if not await is_admin(interaction):
         await _deny_admin(interaction)
         return
     kind = kind.lower().strip()
@@ -2196,7 +2209,7 @@ async def delete_channel(
     channel: discord.TextChannel | discord.VoiceChannel | discord.StageChannel | discord.CategoryChannel | discord.ForumChannel,
 ):
     await interaction.response.defer()
-    if not admin_check(interaction):
+    if not await is_admin(interaction):
         await _deny_admin(interaction)
         return
     name = channel.name
@@ -2219,7 +2232,7 @@ async def delete_channel(
 @app_commands.describe(name="New server name")
 async def rename_server(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
-    if not admin_check(interaction):
+    if not await is_admin(interaction):
         await _deny_admin(interaction)
         return
     try:
@@ -2242,7 +2255,7 @@ async def rename_server(interaction: discord.Interaction, name: str):
 @app_commands.describe(name="Category name")
 async def create_category(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
-    if not admin_check(interaction):
+    if not await is_admin(interaction):
         await _deny_admin(interaction)
         return
     try:
@@ -2270,7 +2283,7 @@ async def set_news_channel(
 
     await interaction.response.defer(ephemeral=True)
 
-    if not admin_check(interaction):
+    if not await is_admin(interaction):
         await _deny_admin(interaction)
         return
 

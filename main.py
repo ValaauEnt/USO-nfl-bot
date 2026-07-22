@@ -11,6 +11,7 @@ from discord import app_commands
 from datetime import datetime, time as dtime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
+from typing import Optional
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -2241,7 +2242,7 @@ async def create_category(interaction: discord.Interaction, name: str):
 @app_commands.describe(channel="The channel to send NFL news to (leave empty to disable)")
 async def set_news_channel(
     interaction: discord.Interaction,
-    channel: discord.TextChannel | None = None,
+    channel: Optional[discord.TextChannel] = None,
 ):
     global NEWS_CHANNEL_ID, seen_article_ids, _news_initialized
 

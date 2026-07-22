@@ -2122,7 +2122,11 @@ async def leagueleaders(interaction: discord.Interaction):
     await interaction.followup.send(embed=view.build_embed(), view=view)
 
 
+_ADMIN_ROLE_NAMES = {"admin", "administrator"}
+
 def admin_check(interaction: discord.Interaction) -> bool:
+    """Return True if the invoker is the server owner, has the Administrator
+    permission bit, or has a role whose name is 'admin' or 'administrator'."""
     if interaction.guild is None:
         return False
     if interaction.user.id == interaction.guild.owner_id:
@@ -2132,11 +2136,21 @@ def admin_check(interaction: discord.Interaction) -> bool:
         member = interaction.guild.get_member(interaction.user.id)
     if member is None:
         return False
-    return any(r.name.lower() == "admin" for r in member.roles)
+    if member.guild_permissions.administrator:
+        return True
+    return any(r.name.lower() in _ADMIN_ROLE_NAMES for r in member.roles)
+
+
+async def _deny_admin(interaction: discord.Interaction) -> None:
+    """Send a consistent permission-denied reply."""
+    msg = "❌ You need the **Administrator** permission or an **Admin** / **Administrator** role to use this command."
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True)
+    else:
+        await interaction.response.send_message(msg, ephemeral=True)
 
 
 @bot.tree.command(name="create-channel", description="Create a new text or voice channel [Admin only]")
-@app_commands.default_permissions(administrator=True)
 @app_commands.describe(
     name="Channel name",
     kind="text or voice",
@@ -2149,6 +2163,9 @@ async def create_channel(
     category: discord.CategoryChannel | None = None,
 ):
     await interaction.response.defer()
+    if not admin_check(interaction):
+        await _deny_admin(interaction)
+        return
     kind = kind.lower().strip()
     try:
         if kind == "voice":
@@ -2173,13 +2190,15 @@ async def create_channel(
 
 
 @bot.tree.command(name="delete-channel", description="Delete an existing channel [Admin only]")
-@app_commands.default_permissions(administrator=True)
 @app_commands.describe(channel="Pick the channel to delete")
 async def delete_channel(
     interaction: discord.Interaction,
     channel: discord.TextChannel | discord.VoiceChannel | discord.StageChannel | discord.CategoryChannel | discord.ForumChannel,
 ):
     await interaction.response.defer()
+    if not admin_check(interaction):
+        await _deny_admin(interaction)
+        return
     name = channel.name
     try:
         await channel.delete()
@@ -2197,10 +2216,12 @@ async def delete_channel(
 
 
 @bot.tree.command(name="rename-server", description="Rename the server [Admin only]")
-@app_commands.default_permissions(administrator=True)
 @app_commands.describe(name="New server name")
 async def rename_server(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
+    if not admin_check(interaction):
+        await _deny_admin(interaction)
+        return
     try:
         old_name = interaction.guild.name
         await interaction.guild.edit(name=name)
@@ -2218,10 +2239,12 @@ async def rename_server(interaction: discord.Interaction, name: str):
 
 
 @bot.tree.command(name="create-category", description="Create a new channel category [Admin only]")
-@app_commands.default_permissions(administrator=True)
 @app_commands.describe(name="Category name")
 async def create_category(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
+    if not admin_check(interaction):
+        await _deny_admin(interaction)
+        return
     try:
         cat = await interaction.guild.create_category(name=name)
         embed = discord.Embed(
@@ -2247,17 +2270,8 @@ async def set_news_channel(
 
     await interaction.response.defer(ephemeral=True)
 
-    # Manual admin check — keeps the command visible and always able to respond
-    member = interaction.user
-    if not (
-        interaction.guild
-        and isinstance(member, discord.Member)
-        and member.guild_permissions.administrator
-    ):
-        await interaction.followup.send(
-            "❌ You need the **Administrator** permission to use this command.",
-            ephemeral=True,
-        )
+    if not admin_check(interaction):
+        await _deny_admin(interaction)
         return
 
     # Disable feed

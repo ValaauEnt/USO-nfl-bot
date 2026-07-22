@@ -2221,42 +2221,74 @@ async def create_category(interaction: discord.Interaction, name: str):
         await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 
-@bot.tree.command(name="set-news-channel", description="Set the channel where NFL news is automatically posted")
-@app_commands.describe(channel="Select the channel for NFL news (leave blank to disable)")
+async def news_channel_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Return every text / announcement channel in the guild as autocomplete choices."""
+    if interaction.guild is None:
+        return []
+    choices = []
+    for ch in interaction.guild.channels:
+        if not isinstance(ch, (discord.TextChannel, discord.ForumChannel)):
+            continue
+        if current.lower() in ch.name.lower():
+            choices.append(app_commands.Choice(name=f"#{ch.name}", value=str(ch.id)))
+        if len(choices) >= 25:   # Discord hard limit
+            break
+    return choices
+
+
+@bot.tree.command(name="set-news-channel", description="Pick which channel NFL news is posted to")
+@app_commands.describe(channel="Start typing to search — every channel in the server will appear")
+@app_commands.autocomplete(channel=news_channel_autocomplete)
 async def set_news_channel(
     interaction: discord.Interaction,
-    channel: Optional[discord.TextChannel] = None,
+    channel: Optional[str] = None,
 ):
     global NEWS_CHANNEL_ID, seen_article_ids, _news_initialized
 
     await interaction.response.defer(ephemeral=True)
 
-    if channel is None:
+    # No channel supplied → disable the feed
+    if not channel:
         NEWS_CHANNEL_ID = 0
-        embed = discord.Embed(
-            title="🔕 News Feed Disabled",
-            description="The NFL news feed has been turned off. Use `/set-news-channel` and pick a channel to re-enable it.",
-            color=0x7A5C2E,
+        await interaction.followup.send(
+            embed=discord.Embed(
+                title="🔕 News Feed Disabled",
+                description="NFL news auto-posting is off. Run `/set-news-channel` again to re-enable it.",
+                color=0x7A5C2E,
+            ).set_footer(text="USO Bot • News Feed"),
+            ephemeral=True,
         )
-        embed.set_footer(text="USO Bot • News Feed")
-        await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
-    NEWS_CHANNEL_ID = channel.id
+    # Resolve the channel ID that autocomplete stored as a string
+    if not channel.isdigit():
+        await interaction.followup.send("❌ Please select a channel from the dropdown list.", ephemeral=True)
+        return
+
+    ch = interaction.guild.get_channel(int(channel)) if interaction.guild else None
+    if ch is None:
+        await interaction.followup.send("❌ Channel not found — it may have been deleted.", ephemeral=True)
+        return
+
+    NEWS_CHANNEL_ID = ch.id
     seen_article_ids = set()
     _news_initialized = False
 
-    embed = discord.Embed(
-        title="✅ News Feed Channel Set",
-        description=(
-            f"NFL news will now be automatically posted to {channel.mention}.\n\n"
-            "The last 24 hours of headlines will appear there shortly, "
-            "then new articles will post as they break."
-        ),
-        color=0x7A5C2E,
+    await interaction.followup.send(
+        embed=discord.Embed(
+            title="✅ News Feed Channel Set",
+            description=(
+                f"NFL news will now be automatically posted to {ch.mention}.\n\n"
+                "The last 24 hours of headlines will appear there shortly, "
+                "then new breaking articles will post automatically."
+            ),
+            color=0x7A5C2E,
+        ).set_footer(text="USO Bot • News Feed"),
+        ephemeral=True,
     )
-    embed.set_footer(text="USO Bot • News Feed")
-    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.event

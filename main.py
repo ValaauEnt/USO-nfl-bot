@@ -24,6 +24,7 @@ ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nf
 ESPN_NEWS_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/news"
 ESPN_SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={event_id}"
 ESPN_TEAM_ROSTER_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team}/roster"
+ESPN_TEAM_SCHEDULE_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams/{team}/schedule"
 
 # ESPN uses different URL slugs for some teams
 ROSTER_SLUGS = {
@@ -897,6 +898,173 @@ def build_news_embed(items: list[dict]) -> discord.Embed:
     return embeds[0] if embeds else discord.Embed(title="📰 NFL Headlines", color=0x7A5C2E)
 
 
+async def get_team_schedule(team_abbr: str) -> dict:
+    """Fetch full season schedule + record for a team. Returns {team, record, standing, season, games}."""
+    slug = ROSTER_SLUGS.get(team_abbr, team_abbr.lower())
+    data = await fetch_json(ESPN_TEAM_SCHEDULE_URL.format(team=slug))
+    team_info = data.get("team", {})
+    record = team_info.get("recordSummary", "0-0")
+    season = team_info.get("seasonSummary", "")
+    standing = team_info.get("standingSummary", "")
+
+    _ET = ZoneInfo("America/New_York")
+    games = []
+    for event in data.get("events", []):
+        comp = event.get("competitions", [{}])[0]
+        week_text = event.get("week", {}).get("text", "")
+        week_num = event.get("week", {}).get("number", 0)
+        season_type = event.get("seasonType", {}).get("type", 2)
+
+        # Parse game time
+        date_str = event.get("date", "")
+        game_dt = None
+        if date_str:
+            try:
+                game_dt = datetime.fromisoformat(date_str.replace("Z", "+00:00")).astimezone(_ET)
+            except ValueError:
+                pass
+
+        # Find our team and the opponent
+        competitors = comp.get("competitors", [])
+        our_side = None
+        opp_side = None
+        for c in competitors:
+            if c.get("team", {}).get("abbreviation", "").upper() == team_abbr.upper():
+                our_side = c
+            else:
+                opp_side = c
+
+        if not opp_side:
+            continue
+
+        opp_abbr = opp_side.get("team", {}).get("abbreviation", "???").upper()
+        home_away = our_side.get("homeAway", "home") if our_side else "home"
+        location = "vs" if home_away == "home" else "@"
+
+        # Result
+        completed = comp.get("status", {}).get("type", {}).get("completed", False)
+        result = ""
+        our_score = ""
+        opp_score = ""
+        winner = False
+        if completed and our_side and opp_side:
+            our_score = str(our_side.get("score", "") or "")
+            opp_score = str(opp_side.get("score", "") or "")
+            winner = our_side.get("winner", False)
+            result = "W" if winner else "L"
+
+        games.append({
+            "week_num": week_num,
+            "week_text": week_text,
+            "season_type": season_type,
+            "game_dt": game_dt,
+            "opp_abbr": opp_abbr,
+            "location": location,
+            "completed": completed,
+            "result": result,
+            "our_score": our_score,
+            "opp_score": opp_score,
+        })
+
+    return {
+        "team_abbr": team_abbr,
+        "team_name": TEAM_NAMES.get(team_abbr, team_abbr),
+        "record": record,
+        "season": season,
+        "standing": standing,
+        "games": games,
+    }
+
+
+def build_schedule_embed(schedule: dict, page: int = 0) -> discord.Embed:
+    """Build a paginated schedule embed. Each page shows 9 weeks."""
+    team_abbr = schedule["team_abbr"]
+    team_name = schedule["team_name"]
+    record = schedule["record"]
+    season = schedule["season"]
+    standing = schedule["standing"]
+    games = schedule["games"]
+    logo = TEAM_LOGOS.get(team_abbr, "")
+
+    # Split into pages of 9 games
+    page_size = 9
+    total_pages = max(1, -(-len(games) // page_size))  # ceiling division
+    page = max(0, min(page, total_pages - 1))
+    page_games = games[page * page_size: (page + 1) * page_size]
+
+    _ET = ZoneInfo("America/New_York")
+    now_et = datetime.now(_ET)
+
+    desc_parts = [f"**Record:** {record}"]
+    if standing:
+        desc_parts.append(f"**Standing:** {standing}")
+    if season:
+        desc_parts.append(f"**Season:** {season}")
+
+    embed = discord.Embed(
+        title=f"📅  {team_name} Schedule",
+        description="  ".join(desc_parts),
+        color=0x7A5C2E,
+    )
+    if logo:
+        embed.set_thumbnail(url=logo)
+
+    lines = []
+    for g in page_games:
+        week = g["week_text"] or f"Week {g['week_num']}"
+        loc = g["location"]
+        opp = g["opp_abbr"]
+
+        if g["completed"]:
+            icon = "✅" if g["result"] == "W" else "❌"
+            score_str = f"{g['our_score']}-{g['opp_score']}"
+            lines.append(f"`{week:<7}` {icon} **{g['result']}** {score_str:<7}  {loc} {opp}")
+        else:
+            if g["game_dt"]:
+                # Mark next upcoming game
+                is_next = g["game_dt"] > now_et
+                date_fmt = g["game_dt"].strftime("%b %-d %-I:%M%p").replace("AM", "am").replace("PM", "pm")
+                marker = "▶️" if is_next else "🕐"
+                lines.append(f"`{week:<7}` {marker} {date_fmt:<17}  {loc} {opp}")
+            else:
+                lines.append(f"`{week:<7}` 🕐 TBD                {loc} {opp}")
+
+    if lines:
+        label = f"Games (Page {page + 1}/{total_pages})" if total_pages > 1 else "Games"
+        embed.add_field(name=label, value="\n".join(lines), inline=False)
+    else:
+        embed.add_field(name="Schedule", value="No games found.", inline=False)
+
+    embed.set_footer(text=f"USO NFL Bot • ESPN  •  Page {page + 1}/{total_pages}")
+    return embed
+
+
+class ScheduleView(discord.ui.View):
+    def __init__(self, schedule: dict):
+        super().__init__(timeout=300)
+        self.schedule = schedule
+        self.page = 0
+        games = schedule.get("games", [])
+        self.total_pages = max(1, -(-len(games) // 9))
+        self._refresh_buttons()
+
+    def _refresh_buttons(self):
+        self.prev_btn.disabled = self.page <= 0
+        self.next_btn.disabled = self.page >= self.total_pages - 1
+
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = max(0, self.page - 1)
+        self._refresh_buttons()
+        await interaction.response.edit_message(embed=build_schedule_embed(self.schedule, self.page), view=self)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page = min(self.total_pages - 1, self.page + 1)
+        self._refresh_buttons()
+        await interaction.response.edit_message(embed=build_schedule_embed(self.schedule, self.page), view=self)
+
+
 def build_trade_tracker_embed(sections: dict) -> discord.Embed:
     embed = discord.Embed(
         title="📊 NFL TRADE TRACKER",
@@ -1355,6 +1523,18 @@ async def player_name_autocomplete(
     return [app_commands.Choice(name=p["label"][:100], value=p["name"]) for p in matches]
 
 
+async def team_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    current_lower = current.lower()
+    choices = []
+    for abbr, name in TEAM_NAMES.items():
+        if current_lower in abbr.lower() or current_lower in name.lower():
+            choices.append(app_commands.Choice(name=f"{name} ({abbr})", value=abbr))
+    return choices[:25]
+
+
 async def upsert_message(channel_id: int, message_id: int | None, embed: discord.Embed) -> int | None:
     if not channel_id:
         return message_id
@@ -1629,6 +1809,34 @@ async def seasonstats(interaction: discord.Interaction, name: str):
 
     view = SeasonStatsView(profile, season_blocks, profile["_gamelog_entries"])
     await interaction.followup.send(embed=view.build_embed(), view=view)
+
+
+@bot.tree.command(name="schedule", description="Show NFL team schedule with win/loss record for the current season")
+@app_commands.describe(team="Team name or abbreviation (e.g. KC, Dallas, Eagles)")
+@app_commands.autocomplete(team=team_autocomplete)
+async def schedule(interaction: discord.Interaction, team: str):
+    await interaction.response.defer()
+    team = team.upper().strip()
+    # Accept full names — map back to abbreviation
+    if team not in TEAM_NAMES:
+        match = next((abbr for abbr, name in TEAM_NAMES.items() if team in name.upper()), None)
+        if match:
+            team = match
+        else:
+            await interaction.followup.send(
+                f"❌ Unknown team `{team}`. Try an abbreviation like `KC`, `DAL`, or `PHI`.",
+                ephemeral=True,
+            )
+            return
+    try:
+        schedule_data = await get_team_schedule(team)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Could not fetch schedule: {e}", ephemeral=True)
+        return
+
+    view = ScheduleView(schedule_data)
+    view._refresh_buttons()
+    await interaction.followup.send(embed=build_schedule_embed(schedule_data, 0), view=view)
 
 
 @bot.tree.command(name="headlines", description="Show latest NFL headlines")

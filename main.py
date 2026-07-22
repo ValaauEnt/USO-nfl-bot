@@ -1065,6 +1065,131 @@ class ScheduleView(discord.ui.View):
         await interaction.response.edit_message(embed=build_schedule_embed(self.schedule, self.page), view=self)
 
 
+def build_weekly_schedule_embed(games: list[dict], meta: dict) -> discord.Embed:
+    """Full NFL week schedule — every game with records and result/time."""
+    _ET = ZoneInfo("America/New_York")
+    now_et = datetime.now(_ET)
+
+    embed = discord.Embed(
+        title=f"📅  NFL Schedule — {meta.get('display', 'This Week')}",
+        color=0x7A5C2E,
+    )
+
+    if not games:
+        embed.description = "No games scheduled this week."
+        embed.set_footer(text="USO NFL Bot • ESPN")
+        return embed
+
+    lines = []
+    for g in games:
+        away = g["away_team"]
+        home = g["home_team"]
+        away_rec = g.get("away_record", "")
+        home_rec = g.get("home_record", "")
+        away_str = f"{away} ({away_rec})" if away_rec else away
+        home_str = f"{home} ({home_rec})" if home_rec else home
+
+        if g["completed"]:
+            a_score = g.get("away_score", "0")
+            h_score = g.get("home_score", "0")
+            if g.get("away_winner"):
+                winner_icon = "🏆"
+                line = f"✅ **{away_str} {a_score}** — {h_score} {home_str}"
+            else:
+                winner_icon = "🏆"
+                line = f"✅ {away_str} {a_score} — **{h_score} {home_str}**"
+            _ = winner_icon  # suppress unused
+        elif g.get("in_progress"):
+            a_score = g.get("away_score", "0")
+            h_score = g.get("home_score", "0")
+            state = g.get("state", "LIVE")
+            line = f"🔴 **LIVE** {away} {a_score} — {h_score} {home}  *{state}*"
+        else:
+            # Upcoming — state field holds the tip-off time string from ESPN
+            state = g.get("state", "TBD")
+            line = f"🕐 {away_str} @ {home_str}  —  {state}"
+
+        lines.append(line)
+
+    # Split into two equal fields so we stay under 1024-char limit
+    mid = (len(lines) + 1) // 2
+    embed.add_field(name="Games", value="\n".join(lines[:mid]), inline=False)
+    if lines[mid:]:
+        embed.add_field(name="\u200b", value="\n".join(lines[mid:]), inline=False)
+
+    embed.set_footer(text="USO NFL Bot • ESPN  •  ◀ ▶ to browse weeks")
+    return embed
+
+
+class WeeklyScheduleView(discord.ui.View):
+    """Week-by-week NFL schedule with Prev/Next and season-type buttons."""
+
+    def __init__(self, games: list[dict], meta: dict):
+        super().__init__(timeout=300)
+        self.games = games
+        self.meta = meta
+        self._sync_buttons()
+
+    def _sync_buttons(self):
+        self.prev_btn.disabled = self.meta["week"] <= 1
+        self.next_btn.disabled = self.meta["week"] >= self.meta["max_week"]
+        self.pre_btn.style = (
+            discord.ButtonStyle.primary if self.meta["season_type"] == 1
+            else discord.ButtonStyle.secondary
+        )
+        self.reg_btn.style = (
+            discord.ButtonStyle.primary if self.meta["season_type"] == 2
+            else discord.ButtonStyle.secondary
+        )
+        self.playoff_btn.style = (
+            discord.ButtonStyle.primary if self.meta["season_type"] == 3
+            else discord.ButtonStyle.secondary
+        )
+
+    def build_embed(self) -> discord.Embed:
+        return build_weekly_schedule_embed(self.games, self.meta)
+
+    async def _fetch_and_update(self, interaction: discord.Interaction):
+        self.games, self.meta = await get_scoreboard_data(
+            week=self.meta["week"],
+            season_type=self.meta["season_type"],
+            year=self.meta["year"],
+        )
+        self._sync_buttons()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.meta["week"] -= 1
+        await self._fetch_and_update(interaction)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.meta["week"] += 1
+        await self._fetch_and_update(interaction)
+
+    @discord.ui.button(label="Preseason", style=discord.ButtonStyle.secondary, row=1)
+    async def pre_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.meta["season_type"] = 1
+        self.meta["week"] = 1
+        self.meta["max_week"] = 4
+        await self._fetch_and_update(interaction)
+
+    @discord.ui.button(label="Regular Season", style=discord.ButtonStyle.primary, row=1)
+    async def reg_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.meta["season_type"] = 2
+        self.meta["week"] = 1
+        self.meta["max_week"] = 18
+        await self._fetch_and_update(interaction)
+
+    @discord.ui.button(label="Playoffs", style=discord.ButtonStyle.secondary, row=1)
+    async def playoff_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.meta["season_type"] = 3
+        self.meta["week"] = 1
+        self.meta["max_week"] = 5
+        await self._fetch_and_update(interaction)
+
+
 def build_trade_tracker_embed(sections: dict) -> discord.Embed:
     embed = discord.Embed(
         title="📊 NFL TRADE TRACKER",
@@ -1811,15 +1936,43 @@ async def seasonstats(interaction: discord.Interaction, name: str):
     await interaction.followup.send(embed=view.build_embed(), view=view)
 
 
-@bot.tree.command(name="schedule", description="Show NFL team schedule with win/loss record for the current season")
-@app_commands.describe(team="Team name or abbreviation (e.g. KC, Dallas, Eagles)")
+@bot.tree.command(name="schedule", description="Show NFL schedule — pick a team's full season or the weekly NFL schedule")
+@app_commands.describe(
+    view="Choose Team Schedule or Weekly NFL Schedule",
+    team="Team name or abbreviation — required for Team Schedule (e.g. KC, Dallas, Eagles)",
+)
+@app_commands.choices(view=[
+    app_commands.Choice(name="Team Schedule", value="team"),
+    app_commands.Choice(name="Weekly NFL Schedule", value="weekly"),
+])
 @app_commands.autocomplete(team=team_autocomplete)
-async def schedule(interaction: discord.Interaction, team: str):
+async def schedule(
+    interaction: discord.Interaction,
+    view: str = "weekly",
+    team: str | None = None,
+):
     await interaction.response.defer()
+
+    # ── Weekly NFL schedule ──────────────────────────────────────────
+    if view == "weekly" and team is None:
+        games, meta = await get_scoreboard_data()
+        wview = WeeklyScheduleView(games, meta)
+        await interaction.followup.send(embed=wview.build_embed(), view=wview)
+        return
+
+    # ── Team Schedule ────────────────────────────────────────────────
+    # If user picked "weekly" but also provided a team, treat as team schedule
+    if team is None:
+        await interaction.followup.send(
+            "❌ Please provide a team name when using **Team Schedule**.\n"
+            "Example: `/schedule view:Team Schedule team:KC`",
+            ephemeral=True,
+        )
+        return
+
     team = team.upper().strip()
-    # Accept full names — map back to abbreviation
     if team not in TEAM_NAMES:
-        match = next((abbr for abbr, name in TEAM_NAMES.items() if team in name.upper()), None)
+        match = next((abbr for abbr, tname in TEAM_NAMES.items() if team in tname.upper()), None)
         if match:
             team = match
         else:
@@ -1828,15 +1981,16 @@ async def schedule(interaction: discord.Interaction, team: str):
                 ephemeral=True,
             )
             return
+
     try:
         schedule_data = await get_team_schedule(team)
     except Exception as e:
         await interaction.followup.send(f"❌ Could not fetch schedule: {e}", ephemeral=True)
         return
 
-    view = ScheduleView(schedule_data)
-    view._refresh_buttons()
-    await interaction.followup.send(embed=build_schedule_embed(schedule_data, 0), view=view)
+    sview = ScheduleView(schedule_data)
+    sview._refresh_buttons()
+    await interaction.followup.send(embed=build_schedule_embed(schedule_data, 0), view=sview)
 
 
 @bot.tree.command(name="headlines", description="Show latest NFL headlines")

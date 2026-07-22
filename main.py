@@ -15,7 +15,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 
 # Optional auto-post channels. Set to your Discord channel ID to enable.
 SCORES_CHANNEL_ID = 0
-NEWS_CHANNEL_ID = 0
+NEWS_CHANNEL_ID = 0          # updated at runtime via /set-news-channel
 ALERTS_CHANNEL_ID = 0
 NFLWATCH_CHANNEL_ID = 1480936006395101387  # Auto-posts NFL market watch at 8am and 5pm ET daily
 
@@ -1750,7 +1750,7 @@ async def breaking_news_loop():
     - First run: post everything from the last 24 h as a backlog, mark all seen.
     - Subsequent runs: post only brand-new articles (breaking news) immediately.
     """
-    global seen_article_ids, _news_initialized
+    global seen_article_ids, _news_initialized, NEWS_CHANNEL_ID
 
     target_id = NEWS_CHANNEL_ID or NFLWATCH_CHANNEL_ID
     if not target_id:
@@ -2136,6 +2136,46 @@ async def create_category(interaction: discord.Interaction, name: str):
         await interaction.followup.send("❌ I don't have permission to create categories. Make sure I have the **Manage Channels** permission.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
+
+@bot.tree.command(name="set-news-channel", description="Set the channel where NFL news is automatically posted [Admin only]")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(channel="The channel to send NFL news to (leave empty to disable)")
+async def set_news_channel(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel | None = None,
+):
+    global NEWS_CHANNEL_ID, seen_article_ids, _news_initialized
+
+    await interaction.response.defer(ephemeral=True)
+
+    if channel is None:
+        NEWS_CHANNEL_ID = 0
+        embed = discord.Embed(
+            title="🔕 News Feed Disabled",
+            description="The NFL news feed has been turned off. Use `/set-news-channel` and pick a channel to re-enable it.",
+            color=0x7A5C2E,
+        )
+        embed.set_footer(text="USO Bot • News Feed")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    NEWS_CHANNEL_ID = channel.id
+    # Reset so the backlog is posted fresh to the new channel
+    seen_article_ids = set()
+    _news_initialized = False
+
+    embed = discord.Embed(
+        title="✅ News Feed Channel Set",
+        description=(
+            f"NFL news will now be automatically posted to {channel.mention}.\n\n"
+            "The last 24 hours of headlines will appear there shortly, "
+            "then new articles will post as they break."
+        ),
+        color=0x7A5C2E,
+    )
+    embed.set_footer(text="USO Bot • News Feed")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.event

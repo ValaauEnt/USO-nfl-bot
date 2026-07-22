@@ -2,6 +2,7 @@ import os
 import re
 import html
 import asyncio
+import xml.etree.ElementTree as ET
 import aiohttp
 from aiohttp import web as aiohttp_web
 import discord
@@ -46,6 +47,10 @@ _LEADERS_DEFENSE = [
 # Fallback pages
 NFL_NEWS_URL = "https://www.nfl.com/news/"
 YAHOO_NFL_NEWS_URL = "https://sports.yahoo.com/nfl/news/"
+
+# RSS feeds — pulled simultaneously alongside ESPN
+PFT_RSS_URL   = "https://profootballtalk.nbcsports.com/feed/"
+YAHOO_RSS_URL = "https://sports.yahoo.com/rss/nfl"
 
 TEAM_LOGOS = {
     "ARI": "https://a.espncdn.com/i/teamlogos/nfl/500/ari.png",
@@ -381,6 +386,73 @@ def _parse_espn_article(article: dict) -> dict:
     }
 
 
+async def _fetch_rss_articles(rss_url: str, source_name: str, hours: int = 24) -> list[dict]:
+    """Fetch and parse an RSS feed, returning standardised news-item dicts."""
+    try:
+        text = await fetch_text(rss_url)
+        root = ET.fromstring(text)
+        channel = root.find("channel")
+        if channel is None:
+            channel = root  # Atom / bare feeds
+
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        items: list[dict] = []
+
+        for entry in channel.findall("item"):
+            title_el   = entry.find("title")
+            link_el    = entry.find("link")
+            desc_el    = entry.find("description")
+            pubdate_el = entry.find("pubDate")
+            # media:content or enclosure for thumbnail
+            image_url  = ""
+            media_content = entry.find("{http://search.yahoo.com/mrss/}content")
+            if media_content is not None:
+                image_url = media_content.get("url", "")
+            if not image_url:
+                enclosure = entry.find("enclosure")
+                if enclosure is not None and "image" in enclosure.get("type", ""):
+                    image_url = enclosure.get("url", "")
+
+            headline = html.unescape(title_el.text.strip()) if title_el is not None and title_el.text else ""
+            if not headline:
+                continue
+
+            url = (link_el.text or "").strip() if link_el is not None else ""
+
+            desc_raw = (desc_el.text or "") if desc_el is not None else ""
+            # Strip any HTML tags from description
+            desc = BeautifulSoup(desc_raw, "html.parser").get_text(" ", strip=True)[:300]
+
+            published_dt: datetime | None = None
+            if pubdate_el is not None and pubdate_el.text:
+                try:
+                    from email.utils import parsedate_to_datetime
+                    published_dt = parsedate_to_datetime(pubdate_el.text.strip())
+                except Exception:
+                    pass
+
+            if published_dt is not None and published_dt < cutoff:
+                continue
+
+            # Unique ID: use URL as the stable key
+            article_id = re.sub(r"[^a-zA-Z0-9]", "", url)[-80:] or headline[:80]
+
+            items.append({
+                "article_id": article_id,
+                "headline":   headline,
+                "description": desc,
+                "url":        url,
+                "image_url":  image_url,
+                "video_url":  "",
+                "published":  published_dt,
+                "source":     source_name,
+            })
+
+        return items
+    except Exception:
+        return []
+
+
 async def get_news_items(limit: int = 5) -> list[dict]:
     try:
         data = await fetch_json(f"{ESPN_NEWS_URL}?limit=50")
@@ -402,8 +474,8 @@ async def get_news_items(limit: int = 5) -> list[dict]:
     return yahoo_items
 
 
-async def get_all_recent_news(hours: int = 24) -> list[dict]:
-    """Return all ESPN articles published within the last `hours` hours, newest first."""
+async def _fetch_espn_articles(hours: int = 24) -> list[dict]:
+    """Fetch ESPN articles from the last `hours` hours."""
     try:
         data = await fetch_json(f"{ESPN_NEWS_URL}?limit=50")
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -412,11 +484,37 @@ async def get_all_recent_news(hours: int = 24) -> list[dict]:
             item = _parse_espn_article(article)
             if item["published"] is None or item["published"] >= cutoff:
                 items.append(item)
-        # Sort newest first
-        items.sort(key=lambda x: x["published"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
         return items
     except Exception:
         return []
+
+
+async def get_all_recent_news(hours: int = 24) -> list[dict]:
+    """Fetch from ESPN, Pro Football Talk, and Yahoo Sports simultaneously.
+    Returns a merged, deduplicated list sorted newest-first."""
+    espn_task   = _fetch_espn_articles(hours=hours)
+    pft_task    = _fetch_rss_articles(PFT_RSS_URL,   "Pro Football Talk", hours=hours)
+    yahoo_task  = _fetch_rss_articles(YAHOO_RSS_URL, "Yahoo Sports",      hours=hours)
+
+    espn_items, pft_items, yahoo_items = await asyncio.gather(
+        espn_task, pft_task, yahoo_task
+    )
+
+    # Merge all sources — deduplicate by article_id
+    seen_ids: set[str] = set()
+    merged: list[dict] = []
+    for item in espn_items + pft_items + yahoo_items:
+        aid = item["article_id"]
+        if aid and aid not in seen_ids:
+            seen_ids.add(aid)
+            merged.append(item)
+
+    # Sort newest first; items with no timestamp go to the bottom
+    merged.sort(
+        key=lambda x: x["published"] or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return merged
 
 
 async def get_trade_tracker_sections(limit: int = 12) -> dict:
@@ -1823,10 +1921,10 @@ def _build_single_news_embed(item: dict, breaking: bool = False) -> discord.Embe
     if published:
         _ET = ZoneInfo("America/New_York")
         embed.set_footer(
-            text=f"USO NFL Bot • ESPN • {published.astimezone(_ET).strftime('%b %d, %Y %I:%M %p ET')}"
+            text=f"USO NFL Bot • {source} • {published.astimezone(_ET).strftime('%b %d, %Y %I:%M %p ET')}"
         )
     else:
-        embed.set_footer(text="USO NFL Bot • ESPN")
+        embed.set_footer(text=f"USO NFL Bot • {source}")
     return embed
 
 

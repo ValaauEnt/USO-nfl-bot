@@ -2122,46 +2122,6 @@ async def leagueleaders(interaction: discord.Interaction):
     await interaction.followup.send(embed=view.build_embed(), view=view)
 
 
-_ADMIN_ROLE_NAMES = {"admin", "administrator"}
-
-async def is_admin(interaction: discord.Interaction) -> bool:
-    """Return True if the invoker is the server owner, has the Administrator
-    permission bit, or has a role whose name is 'admin' or 'administrator'
-    (case-insensitive).  Falls back to a live API fetch so roles are always
-    up-to-date even when the member isn't in the local cache."""
-    if interaction.guild is None:
-        return False
-    if interaction.user.id == interaction.guild.owner_id:
-        return True
-
-    # Prefer the Member already attached to the interaction (has roles from payload)
-    member = interaction.user if isinstance(interaction.user, discord.Member) else None
-
-    # Fall back to cache, then live fetch
-    if member is None:
-        member = interaction.guild.get_member(interaction.user.id)
-    if member is None:
-        try:
-            member = await interaction.guild.fetch_member(interaction.user.id)
-        except Exception:
-            return False
-
-    if member.guild_permissions.administrator:
-        return True
-
-    role_names = {r.name.lower() for r in member.roles}
-    print(f"[admin_check] {member} roles: {role_names}")   # visible in workflow logs
-    return bool(role_names & _ADMIN_ROLE_NAMES)
-
-
-async def _deny_admin(interaction: discord.Interaction) -> None:
-    """Send a consistent permission-denied reply."""
-    msg = "❌ You need the **Administrator** permission or an **Admin** / **Administrator** role to use this command."
-    if interaction.response.is_done():
-        await interaction.followup.send(msg, ephemeral=True)
-    else:
-        await interaction.response.send_message(msg, ephemeral=True)
-
 
 @bot.tree.command(name="create-channel", description="Create a new text or voice channel [Admin only]")
 @app_commands.describe(
@@ -2176,9 +2136,6 @@ async def create_channel(
     category: discord.CategoryChannel | None = None,
 ):
     await interaction.response.defer()
-    if not await is_admin(interaction):
-        await _deny_admin(interaction)
-        return
     kind = kind.lower().strip()
     try:
         if kind == "voice":
@@ -2209,9 +2166,6 @@ async def delete_channel(
     channel: discord.TextChannel | discord.VoiceChannel | discord.StageChannel | discord.CategoryChannel | discord.ForumChannel,
 ):
     await interaction.response.defer()
-    if not await is_admin(interaction):
-        await _deny_admin(interaction)
-        return
     name = channel.name
     try:
         await channel.delete()
@@ -2232,9 +2186,6 @@ async def delete_channel(
 @app_commands.describe(name="New server name")
 async def rename_server(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
-    if not await is_admin(interaction):
-        await _deny_admin(interaction)
-        return
     try:
         old_name = interaction.guild.name
         await interaction.guild.edit(name=name)
@@ -2255,9 +2206,6 @@ async def rename_server(interaction: discord.Interaction, name: str):
 @app_commands.describe(name="Category name")
 async def create_category(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
-    if not await is_admin(interaction):
-        await _deny_admin(interaction)
-        return
     try:
         cat = await interaction.guild.create_category(name=name)
         embed = discord.Embed(
@@ -2282,10 +2230,6 @@ async def set_news_channel(
     global NEWS_CHANNEL_ID, seen_article_ids, _news_initialized
 
     await interaction.response.defer(ephemeral=True)
-
-    if not await is_admin(interaction):
-        await _deny_admin(interaction)
-        return
 
     # Disable feed
     if channel is None:

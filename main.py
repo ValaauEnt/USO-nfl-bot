@@ -2263,14 +2263,31 @@ async def set_news_channel(
         )
         return
 
-    # Resolve the channel ID that autocomplete stored as a string
-    if not channel.isdigit():
-        await interaction.followup.send("❌ Please select a channel from the dropdown list.", ephemeral=True)
-        return
+    # Resolve channel: autocomplete ID, <#ID> mention, or plain name with/without #
+    guild = interaction.guild
+    ch = None
+    if guild:
+        raw = channel.strip()
+        # <#123456789> mention
+        mention_match = re.match(r"<#(\d+)>", raw)
+        if mention_match:
+            ch = guild.get_channel(int(mention_match.group(1)))
+        # pure numeric ID (from autocomplete)
+        elif raw.isdigit():
+            ch = guild.get_channel(int(raw))
+        else:
+            # plain name, strip leading #
+            name = raw.lstrip("#").lower()
+            for c in guild.channels:
+                if isinstance(c, (discord.TextChannel, discord.ForumChannel)) and c.name.lower() == name:
+                    ch = c
+                    break
 
-    ch = interaction.guild.get_channel(int(channel)) if interaction.guild else None
     if ch is None:
-        await interaction.followup.send("❌ Channel not found — it may have been deleted.", ephemeral=True)
+        await interaction.followup.send(
+            "❌ Channel not found. Pick one from the dropdown or type the exact channel name.",
+            ephemeral=True,
+        )
         return
 
     NEWS_CHANNEL_ID = ch.id

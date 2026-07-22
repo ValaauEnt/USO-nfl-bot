@@ -7,7 +7,7 @@ from aiohttp import web as aiohttp_web
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 
@@ -141,6 +141,10 @@ session: aiohttp.ClientSession | None = None
 scores_message_id: int | None = None
 news_message_id: int | None = None
 previous_scores: dict[str, tuple[str, str, str]] = {}
+
+# Breaking news tracking
+seen_article_ids: set[str] = set()
+_news_initialized: bool = False
 
 PLAYER_INDEX: list[dict] = []
 PLAYER_LOOKUP: dict[str, dict] = {}
@@ -324,48 +328,62 @@ async def scrape_basic_headlines(url: str, limit: int = 5) -> list[dict]:
         return []
 
 
+def _parse_espn_article(article: dict) -> dict:
+    """Extract a standardised news item dict from a raw ESPN article object."""
+    url = article.get("links", {}).get("web", {}).get("href", "")
+
+    # Pick best image: prefer non-motion (real photo) header image
+    image_url = ""
+    for img in article.get("images", []):
+        candidate = img.get("url", "")
+        if candidate and "/motion/" not in candidate:
+            image_url = candidate
+            break
+    if not image_url:
+        for img in article.get("images", []):
+            candidate = img.get("url", "")
+            if candidate:
+                image_url = candidate
+                break
+
+    # Video: grab first clip link if present
+    video_url = ""
+    for vid in article.get("video", []):
+        links = vid.get("links", {})
+        clip = (
+            links.get("source", {}).get("HD", {}).get("href")
+            or links.get("source", {}).get("full", {}).get("href")
+            or links.get("web", {}).get("href")
+        )
+        if clip:
+            video_url = clip
+            break
+
+    # Parse published timestamp
+    published_str = article.get("published", "")
+    published_dt: datetime | None = None
+    if published_str:
+        try:
+            published_dt = datetime.fromisoformat(published_str.replace("Z", "+00:00"))
+        except ValueError:
+            pass
+
+    return {
+        "article_id": str(article.get("id", "")),
+        "headline": article.get("headline", "No headline"),
+        "description": article.get("description", "No description"),
+        "url": url,
+        "image_url": image_url,
+        "video_url": video_url,
+        "published": published_dt,
+        "source": "ESPN",
+    }
+
+
 async def get_news_items(limit: int = 5) -> list[dict]:
     try:
-        data = await fetch_json(ESPN_NEWS_URL)
-        items = []
-        for article in data.get("articles", [])[:limit]:
-            url = article.get("links", {}).get("web", {}).get("href", "")
-
-            # Pick best image: prefer non-motion (real photo) header image
-            image_url = ""
-            for img in article.get("images", []):
-                candidate = img.get("url", "")
-                if candidate and "/motion/" not in candidate:
-                    image_url = candidate
-                    break
-            if not image_url:
-                for img in article.get("images", []):
-                    candidate = img.get("url", "")
-                    if candidate:
-                        image_url = candidate
-                        break
-
-            # Video: grab first clip link if present
-            video_url = ""
-            for vid in article.get("video", []):
-                links = vid.get("links", {})
-                clip = (
-                    links.get("source", {}).get("HD", {}).get("href")
-                    or links.get("source", {}).get("full", {}).get("href")
-                    or links.get("web", {}).get("href")
-                )
-                if clip:
-                    video_url = clip
-                    break
-
-            items.append({
-                "headline": article.get("headline", "No headline"),
-                "description": article.get("description", "No description"),
-                "url": url,
-                "image_url": image_url,
-                "video_url": video_url,
-                "source": "ESPN"
-            })
+        data = await fetch_json(f"{ESPN_NEWS_URL}?limit=50")
+        items = [_parse_espn_article(a) for a in data.get("articles", [])[:limit]]
         if items:
             return items
     except Exception:
@@ -381,6 +399,23 @@ async def get_news_items(limit: int = 5) -> list[dict]:
     for item in yahoo_items:
         item["source"] = "Yahoo Sports"
     return yahoo_items
+
+
+async def get_all_recent_news(hours: int = 24) -> list[dict]:
+    """Return all ESPN articles published within the last `hours` hours, newest first."""
+    try:
+        data = await fetch_json(f"{ESPN_NEWS_URL}?limit=50")
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        items = []
+        for article in data.get("articles", []):
+            item = _parse_espn_article(article)
+            if item["published"] is None or item["published"] >= cutoff:
+                items.append(item)
+        # Sort newest first
+        items.sort(key=lambda x: x["published"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        return items
+    except Exception:
+        return []
 
 
 async def get_trade_tracker_sections(limit: int = 12) -> dict:
@@ -1403,16 +1438,95 @@ async def scores_loop():
         previous_scores[key] = current
 
 
-@tasks.loop(minutes=10)
-async def news_loop():
-    global news_message_id
-    items = await get_news_items(limit=8)
-    embeds = build_news_embeds(items)
-    news_message_id = await upsert_multi_embed_message(
-        NEWS_CHANNEL_ID,
-        news_message_id,
-        embeds,
+@tasks.loop(minutes=2)
+async def breaking_news_loop():
+    """
+    Every 2 minutes: fetch all articles from the last 24 hours.
+    - First run: post everything from the last 24 h as a backlog, mark all seen.
+    - Subsequent runs: post only brand-new articles (breaking news) immediately.
+    """
+    global seen_article_ids, _news_initialized
+
+    if not NEWS_CHANNEL_ID:
+        return
+    channel = bot.get_channel(NEWS_CHANNEL_ID)
+    if channel is None:
+        return
+
+    recent = await get_all_recent_news(hours=24)
+    if not recent:
+        return
+
+    if not _news_initialized:
+        # First boot — post the full 24-hour backlog oldest-first so the channel
+        # reads chronologically (newest ends up at the bottom).
+        backlog = list(reversed(recent))
+        for item in backlog:
+            embed = _build_single_news_embed(item, breaking=False)
+            try:
+                await channel.send(embed=embed)
+                await asyncio.sleep(0.75)  # stay under Discord rate limits
+            except Exception:
+                pass
+            seen_article_ids.add(item["article_id"])
+        _news_initialized = True
+        return
+
+    # Normal run — only post articles we haven't seen yet
+    new_items = [i for i in recent if i["article_id"] not in seen_article_ids]
+    # Post oldest first so breaking alerts appear in chronological order
+    for item in reversed(new_items):
+        embed = _build_single_news_embed(item, breaking=True)
+        try:
+            await channel.send(embed=embed)
+            await asyncio.sleep(0.75)
+        except Exception:
+            pass
+        seen_article_ids.add(item["article_id"])
+
+
+def _build_single_news_embed(item: dict, breaking: bool = False) -> discord.Embed:
+    """Build a rich embed for one news article."""
+    headline = item.get("headline", "NFL News")
+    url = item.get("url", "")
+    source = item.get("source", "ESPN")
+    desc = item.get("description", "")[:300]
+    image_url = item.get("image_url", "")
+    video_url = item.get("video_url", "")
+    published: datetime | None = item.get("published")
+
+    title_prefix = "🚨 BREAKING: " if breaking else "📰 "
+    parts = []
+    if desc:
+        parts.append(desc)
+    if video_url:
+        parts.append(f"📹 [Watch Video]({video_url})")
+    if url:
+        parts.append(f"[Read Full Article]({url})  •  **{source}**")
+    else:
+        parts.append(f"**{source}**")
+
+    embed = discord.Embed(
+        title=f"{title_prefix}{headline}"[:256],
+        url=url or None,
+        description="\n".join(parts)[:4096],
+        color=0xFF0000 if breaking else 0x7A5C2E,
     )
+    if image_url:
+        embed.set_image(url=image_url)
+    if published:
+        _ET = ZoneInfo("America/New_York")
+        embed.set_footer(
+            text=f"USO NFL Bot • ESPN • {published.astimezone(_ET).strftime('%b %d, %Y %I:%M %p ET')}"
+        )
+    else:
+        embed.set_footer(text="USO NFL Bot • ESPN")
+    return embed
+
+
+# Legacy single-embed wrapper kept for trade/market commands
+def news_loop():
+    pass  # replaced by breaking_news_loop
 
 
 _EASTERN = ZoneInfo("America/New_York")
@@ -1684,8 +1798,8 @@ async def on_ready():
     if not scores_loop.is_running():
         scores_loop.start()
 
-    if not news_loop.is_running():
-        news_loop.start()
+    if not breaking_news_loop.is_running():
+        breaking_news_loop.start()
 
     if not nflwatch_loop.is_running():
         nflwatch_loop.start()

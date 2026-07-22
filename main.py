@@ -19,7 +19,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 SCORES_CHANNEL_ID = 0
 NEWS_CHANNEL_ID = 0          # updated at runtime via /set-news-channel
 ALERTS_CHANNEL_ID = 0
-NFLWATCH_CHANNEL_ID = 1480936006395101387  # Auto-posts NFL market watch at 8am and 5pm ET daily
+NFLWATCH_CHANNEL_ID = 1529435544822743040  # Auto-posts NFL market watch at 8am and 5pm ET daily
 
 # ESPN
 ESPN_SCOREBOARD_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"

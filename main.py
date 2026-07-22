@@ -1863,16 +1863,9 @@ async def breaking_news_loop():
         return
 
     if not _news_initialized:
-        # First boot — post the full 24-hour backlog oldest-first so the channel
-        # reads chronologically (newest ends up at the bottom).
-        backlog = list(reversed(recent))
-        for item in backlog:
-            embed = _build_single_news_embed(item, breaking=False)
-            try:
-                await channel.send(embed=embed)
-                await asyncio.sleep(0.75)  # stay under Discord rate limits
-            except Exception:
-                pass
+        # First boot — mark all current articles as seen without posting them.
+        # Only articles that arrive AFTER this point will be posted as breaking news.
+        for item in recent:
             seen_article_ids.add(item["article_id"])
         _news_initialized = True
         return

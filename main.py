@@ -1447,9 +1447,10 @@ async def breaking_news_loop():
     """
     global seen_article_ids, _news_initialized
 
-    if not NEWS_CHANNEL_ID:
+    target_id = NEWS_CHANNEL_ID or NFLWATCH_CHANNEL_ID
+    if not target_id:
         return
-    channel = bot.get_channel(NEWS_CHANNEL_ID)
+    channel = bot.get_channel(target_id)
     if channel is None:
         return
 

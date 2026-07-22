@@ -2238,36 +2238,68 @@ async def create_category(interaction: discord.Interaction, name: str):
 
 
 @bot.tree.command(name="set-news-channel", description="Set the channel where NFL news is automatically posted [Admin only]")
-@app_commands.default_permissions(administrator=True)
-@app_commands.describe(channel="The channel to send NFL news to (leave empty to disable)")
+@app_commands.describe(channel='Mention the channel (#channel) or paste its ID. Leave blank to disable.')
 async def set_news_channel(
     interaction: discord.Interaction,
-    channel: Optional[discord.TextChannel] = None,
+    channel: Optional[str] = None,
 ):
     global NEWS_CHANNEL_ID, seen_article_ids, _news_initialized
 
     await interaction.response.defer(ephemeral=True)
 
+    # Manual admin check — keeps the command visible and always able to respond
+    member = interaction.user
+    if not (
+        interaction.guild
+        and isinstance(member, discord.Member)
+        and member.guild_permissions.administrator
+    ):
+        await interaction.followup.send(
+            "❌ You need the **Administrator** permission to use this command.",
+            ephemeral=True,
+        )
+        return
+
+    # Disable feed
     if channel is None:
         NEWS_CHANNEL_ID = 0
         embed = discord.Embed(
             title="🔕 News Feed Disabled",
-            description="The NFL news feed has been turned off. Use `/set-news-channel` and pick a channel to re-enable it.",
+            description="The NFL news feed has been turned off. Use `/set-news-channel` with a channel to re-enable it.",
             color=0x7A5C2E,
         )
         embed.set_footer(text="USO Bot • News Feed")
         await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
-    NEWS_CHANNEL_ID = channel.id
-    # Reset so the backlog is posted fresh to the new channel
+    # Resolve channel from mention (<#ID>) or raw ID
+    raw = channel.strip()
+    match = re.match(r"<#(\d+)>", raw)
+    channel_id = int(match.group(1)) if match else (int(raw) if raw.isdigit() else None)
+
+    if channel_id is None:
+        await interaction.followup.send(
+            "❌ Couldn't parse that channel. Please mention the channel (e.g. `#general`) or paste its numeric ID.",
+            ephemeral=True,
+        )
+        return
+
+    resolved = interaction.guild.get_channel(channel_id) if interaction.guild else None
+    if resolved is None:
+        await interaction.followup.send(
+            "❌ Channel not found in this server. Double-check the ID or mention.",
+            ephemeral=True,
+        )
+        return
+
+    NEWS_CHANNEL_ID = channel_id
     seen_article_ids = set()
     _news_initialized = False
 
     embed = discord.Embed(
         title="✅ News Feed Channel Set",
         description=(
-            f"NFL news will now be automatically posted to {channel.mention}.\n\n"
+            f"NFL news will now be automatically posted to {resolved.mention}.\n\n"
             "The last 24 hours of headlines will appear there shortly, "
             "then new articles will post as they break."
         ),

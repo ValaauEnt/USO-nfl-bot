@@ -2363,6 +2363,166 @@ PRIVACY_HTML = """<!DOCTYPE html>
 </html>"""
 
 
+DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>USO NFL Bot — Dashboard</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d0d0d;color:#e0e0e0;min-height:100vh}
+  header{background:linear-gradient(135deg,#1a1a1a 0%,#2a1f0e 100%);border-bottom:2px solid #7A5C2E;padding:20px 32px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header .logo{font-size:2rem}
+  header h1{font-size:1.6rem;color:#e8c97a;font-weight:700;letter-spacing:.5px}
+  header p{font-size:.85rem;color:#999;margin-top:2px}
+  .invite-btn{margin-left:auto;background:linear-gradient(135deg,#5865F2,#4752c4);color:#fff;border:none;padding:11px 22px;border-radius:8px;font-size:.95rem;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:8px;transition:opacity .2s}
+  .invite-btn:hover{opacity:.85}
+  main{max-width:1100px;margin:0 auto;padding:28px 24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px}
+  .card{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:22px 24px}
+  .card h2{font-size:.75rem;text-transform:uppercase;letter-spacing:1.2px;color:#7A5C2E;margin-bottom:14px;font-weight:600}
+  .stat{font-size:2.2rem;font-weight:700;color:#e8c97a;line-height:1}
+  .stat-label{font-size:.8rem;color:#777;margin-top:6px}
+  .status-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#57F287;margin-right:7px;box-shadow:0 0 6px #57F287}
+  .status-dot.offline{background:#ED4245;box-shadow:0 0 6px #ED4245}
+  .status-row{display:flex;align-items:center;font-size:1rem;font-weight:600;color:#57F287}
+  .status-row.offline{color:#ED4245}
+  .cmd-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+  .cmd{background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:7px 10px;font-size:.8rem;color:#c9a84c;font-family:monospace}
+  .news-ch{font-size:1rem;color:#e8c97a;font-weight:600;word-break:break-all;margin-top:4px}
+  .news-ch.none{color:#555;font-style:italic;font-size:.9rem}
+  .sources{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+  .source-tag{background:#111;border:1px solid #2a2a2a;border-radius:6px;padding:6px 10px;font-size:.82rem;color:#aaa;display:flex;align-items:center;gap:8px}
+  .source-dot{width:7px;height:7px;border-radius:50%;background:#57F287;flex-shrink:0}
+  .wide{grid-column:1/-1}
+  footer{text-align:center;padding:20px;font-size:.78rem;color:#444;border-top:1px solid #1a1a1a}
+  footer a{color:#7A5C2E;text-decoration:none}footer a:hover{text-decoration:underline}
+  @media(max-width:520px){header{padding:16px;gap:10px}.invite-btn{margin-left:0;width:100%;justify-content:center}}
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">🏈</span>
+  <div>
+    <h1>USO NFL Bot</h1>
+    <p>Live NFL scores, news, stats &amp; more</p>
+  </div>
+  <a class="invite-btn" id="inviteBtn" href="/invite" target="_blank">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.037A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 00-.041-.106 13.107 13.107 0 01-1.872-.892.077.077 0 01-.008-.128 10.2 10.2 0 00.372-.292.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.01c.12.098.246.198.373.292a.077.077 0 01-.006.127 12.299 12.299 0 01-1.873.892.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.03z"/></svg>
+    Add to Discord
+  </a>
+</header>
+
+<main>
+  <!-- Status -->
+  <div class="card">
+    <h2>Bot Status</h2>
+    <div id="statusRow" class="status-row"><span class="status-dot" id="statusDot"></span><span id="statusText">Checking...</span></div>
+    <div class="stat-label" style="margin-top:10px">Latency: <span id="latency" style="color:#e8c97a">—</span></div>
+  </div>
+
+  <!-- Servers -->
+  <div class="card">
+    <h2>Servers</h2>
+    <div class="stat" id="guildCount">—</div>
+    <div class="stat-label">Discord servers using this bot</div>
+  </div>
+
+  <!-- Uptime -->
+  <div class="card">
+    <h2>Uptime</h2>
+    <div class="stat" id="uptime">—</div>
+    <div class="stat-label">Since last restart</div>
+  </div>
+
+  <!-- News channel -->
+  <div class="card">
+    <h2>News Channel</h2>
+    <div id="newsChannel" class="news-ch none">Not configured</div>
+    <div class="stat-label" style="margin-top:8px">Auto-post destination</div>
+  </div>
+
+  <!-- News sources -->
+  <div class="card">
+    <h2>News Sources</h2>
+    <div class="sources">
+      <div class="source-tag"><span class="source-dot"></span>ESPN API</div>
+      <div class="source-tag"><span class="source-dot"></span>Pro Football Talk (RSS)</div>
+      <div class="source-tag"><span class="source-dot"></span>Yahoo Sports (RSS)</div>
+    </div>
+  </div>
+
+  <!-- Commands -->
+  <div class="card wide">
+    <h2>Available Commands</h2>
+    <div class="cmd-grid">
+      <div class="cmd">/scoreboard</div>
+      <div class="cmd">/gamestats</div>
+      <div class="cmd">/playerstats</div>
+      <div class="cmd">/gamelog</div>
+      <div class="cmd">/seasonstats</div>
+      <div class="cmd">/schedule</div>
+      <div class="cmd">/nfl-leaders</div>
+      <div class="cmd">/headlines</div>
+      <div class="cmd">/tradetracker</div>
+      <div class="cmd">/nflwatch</div>
+      <div class="cmd">/create-channel</div>
+      <div class="cmd">/delete-channel</div>
+      <div class="cmd">/rename-server</div>
+      <div class="cmd">/create-category</div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <a href="/tos">Terms of Service</a> &nbsp;·&nbsp; <a href="/privacy">Privacy Policy</a>
+  &nbsp;·&nbsp; USO NFL Bot — Unofficial. Not affiliated with the NFL or ESPN.
+</footer>
+
+<script>
+async function refresh() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    const dot = document.getElementById('statusDot');
+    const row = document.getElementById('statusRow');
+    const txt = document.getElementById('statusText');
+    if (d.online) {
+      dot.className = 'status-dot';
+      row.className = 'status-row';
+      txt.textContent = 'Online';
+    } else {
+      dot.className = 'status-dot offline';
+      row.className = 'status-row offline';
+      txt.textContent = 'Offline';
+    }
+    document.getElementById('latency').textContent = d.latency_ms != null ? d.latency_ms + ' ms' : '—';
+    document.getElementById('guildCount').textContent = d.guild_count ?? '—';
+    document.getElementById('uptime').textContent = d.uptime ?? '—';
+    const nc = document.getElementById('newsChannel');
+    if (d.news_channel) {
+      nc.textContent = d.news_channel;
+      nc.className = 'news-ch';
+    } else {
+      nc.textContent = 'Not configured';
+      nc.className = 'news-ch none';
+    }
+  } catch(e) {}
+}
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>"""
+
+
+_start_time = datetime.now(timezone.utc)
+
+
+async def handle_root(request):
+    return aiohttp_web.Response(text=DASHBOARD_HTML, content_type="text/html")
+
+
 async def handle_tos(request):
     return aiohttp_web.Response(text=TOS_HTML, content_type="text/html")
 
@@ -2371,8 +2531,49 @@ async def handle_privacy(request):
     return aiohttp_web.Response(text=PRIVACY_HTML, content_type="text/html")
 
 
-async def handle_root(request):
-    return aiohttp_web.Response(text="<h2>USO NFL Bot is running.</h2>", content_type="text/html")
+async def handle_invite(request):
+    app_id = bot.application_id or (bot.user.id if bot.user else None)
+    if app_id:
+        perms = 8  # Administrator — covers all bot actions
+        url = f"https://discord.com/api/oauth2/authorize?client_id={app_id}&permissions={perms}&scope=bot%20applications.commands"
+    else:
+        url = "https://discord.com/developers/applications"
+    raise aiohttp_web.HTTPFound(url)
+
+
+async def handle_api_status(request):
+    import json as _json
+    online = bot.is_ready()
+    latency = round(bot.latency * 1000) if online else None
+    guild_count = len(bot.guilds) if online else 0
+
+    # Uptime string
+    delta = datetime.now(timezone.utc) - _start_time
+    total_s = int(delta.total_seconds())
+    h, rem = divmod(total_s, 3600)
+    m, s = divmod(rem, 60)
+    uptime = f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+
+    # News channel name
+    news_ch_name = None
+    target_id = NEWS_CHANNEL_ID or NFLWATCH_CHANNEL_ID
+    if target_id and online:
+        ch = bot.get_channel(target_id)
+        if ch:
+            news_ch_name = f"#{ch.name}"
+
+    payload = {
+        "online": online,
+        "latency_ms": latency,
+        "guild_count": guild_count,
+        "uptime": uptime,
+        "news_channel": news_ch_name,
+    }
+    return aiohttp_web.Response(
+        text=_json.dumps(payload),
+        content_type="application/json",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 async def run_web_server():
@@ -2380,6 +2581,8 @@ async def run_web_server():
     app.router.add_get("/", handle_root)
     app.router.add_get("/tos", handle_tos)
     app.router.add_get("/privacy", handle_privacy)
+    app.router.add_get("/invite", handle_invite)
+    app.router.add_get("/api/status", handle_api_status)
     runner = aiohttp_web.AppRunner(app)
     await runner.setup()
     site = aiohttp_web.TCPSite(runner, "0.0.0.0", 8080)

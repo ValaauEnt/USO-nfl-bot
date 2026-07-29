@@ -2405,12 +2405,17 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    should_respond = (
-        bot_mentioned
-        or (mode in ("mention_replies", "community") and replying_to_bot)
-        or (mode in ("ai_channel", "community") and in_ai_ch)
-        or (mode != "silent" and conv_live)
-    )
+    # In mention_only mode the bot ONLY responds to direct @mentions — no
+    # conversation window, no reply-chain triggers.
+    if mode == "mention_only":
+        should_respond = bot_mentioned
+    else:
+        should_respond = (
+            bot_mentioned
+            or (mode in ("mention_replies", "community") and replying_to_bot)
+            or (mode in ("ai_channel", "community") and in_ai_ch)
+            or conv_live
+        )
 
     if not should_respond:
         await bot.process_commands(message)
@@ -2433,8 +2438,8 @@ async def on_message(message: discord.Message):
     if not content:
         content = "Hey!"
 
-    # Keep / refresh conversation window
-    if bot_mentioned or conv_live:
+    # Open / refresh conversation window (only for modes that use it)
+    if mode != "mention_only" and (bot_mentioned or conv_live):
         _conv.activate(message.channel.id)
 
     _cd.stamp(message.author.id, message.channel.id)
@@ -2443,6 +2448,10 @@ async def on_message(message: discord.Message):
         await message.reply("My AI brain isn't online yet — give me a second and try again. 🤖")
         await bot.process_commands(message)
         return
+
+    # Brief pause before replying — ensures the message was meant for the bot
+    # and avoids an instant "jumped in" feel.
+    await asyncio.sleep(1.5)
 
     async with message.channel.typing():
         reply = await ai_brain.process_message(

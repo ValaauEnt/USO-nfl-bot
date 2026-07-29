@@ -154,8 +154,7 @@ COMPLETED_WORDS = ["acquired", "acquire", "traded", "lands", "gets"]
 RUMOR_WORDS = ["rumor", "rumours", "report", "talks", "discussing", "expected", "pursuing"]
 
 intents = discord.Intents.default()
-# NOTE: set intents.message_content = True AFTER enabling "Message Content Intent"
-# in the Discord Developer Portal → your app → Bot → Privileged Gateway Intents
+intents.message_content = True   # enabled — Message Content Intent toggled on in Dev Portal
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ── AI brain — initialised in on_ready once OPENAI_API_KEY is confirmed ───────

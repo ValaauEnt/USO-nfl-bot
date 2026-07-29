@@ -1,7 +1,9 @@
 import os
 import re
 import html
+import random
 import asyncio
+import logging
 import xml.etree.ElementTree as ET
 import aiohttp
 from aiohttp import web as aiohttp_web
@@ -12,6 +14,17 @@ from datetime import datetime, time as dtime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 from typing import Optional
+
+# ── AI modules ────────────────────────────────────────────────────────────────
+from ai.settings  import init_db, get_server_settings, upsert_server_settings
+from ai.memory    import recall_server, recall_user, remember_user, forget_user, clear_conversation
+from ai.brain     import AIBrain
+from ai import conversation as _conv
+from ai import cooldowns    as _cd
+from ai.scheduler import run_checkins
+
+logging.basicConfig(level=logging.WARNING)
+log = logging.getLogger("uso")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -141,7 +154,12 @@ COMPLETED_WORDS = ["acquired", "acquire", "traded", "lands", "gets"]
 RUMOR_WORDS = ["rumor", "rumours", "report", "talks", "discussing", "expected", "pursuing"]
 
 intents = discord.Intents.default()
+# NOTE: set intents.message_content = True AFTER enabling "Message Content Intent"
+# in the Discord Developer Portal → your app → Bot → Privileged Gateway Intents
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ── AI brain — initialised in on_ready once OPENAI_API_KEY is confirmed ───────
+ai_brain: AIBrain | None = None
 
 session: aiohttp.ClientSession | None = None
 
@@ -2214,14 +2232,473 @@ async def create_category(interaction: discord.Interaction, name: str):
         await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  AI — Tools executor (calls existing bot data functions, returns plain text)
+# ══════════════════════════════════════════════════════════════════════════════
+
+_MAGIC_8 = [
+    "It is certain.", "Without a doubt.", "You may rely on it.",
+    "Yes, definitely.", "It is decidedly so.", "As I see it, yes.",
+    "Ask again later.", "Better not tell you now.", "Cannot predict now.",
+    "Concentrate and ask again.", "Don't count on it.", "My reply is no.",
+    "Outlook not so good.", "Very doubtful.", "My sources say no.",
+]
+
+_HOT_TAKES = [
+    "Thursday Night Football ruins more seasons than injuries do.",
+    "Kickers are the most underrated players in football. Change my mind.",
+    "A great offensive line wins championships, not a great QB.",
+    "The two-point conversion should be worth 3 points.",
+    "Pre-snap penalties are ruining the flow of the modern NFL.",
+    "Punters are the most overlooked athletes in all of sports.",
+    "Any team that drafts a QB in round 1 is setting themselves up for failure.",
+    "Home-field advantage in the playoffs is massively overrated.",
+    "Pass interference should be a 15-yard penalty, not a spot foul.",
+    "The Pro Bowl is unwatchable and should be replaced with skills competitions.",
+]
+
+_NFL_TRIVIA = [
+    ("Who holds the NFL record for most career passing yards?", "Tom Brady (89,214 yards as of retirement)"),
+    ("Which team has won the most Super Bowls?", "New England Patriots with 6 Super Bowl wins"),
+    ("Who was the first QB to throw for 5,000 yards in a single season?", "Dan Marino in 1984 (5,084 yards)"),
+    ("Which defensive player holds the record for most career sacks?", "Bruce Smith with 200 career sacks"),
+    ("What year was the Super Bowl first played?", "1967 (Super Bowl I, Packers vs Chiefs)"),
+    ("Who kicked the longest field goal in NFL history?", "Matt Prater — 64 yards in 2013"),
+    ("Which team went 16-0 in a regular season?", "The 2007 New England Patriots"),
+    ("Who holds the single-season rushing yards record?", "Eric Dickerson — 2,105 yards in 1984"),
+]
+
+
+async def _ai_tools_executor(fn_name: str, fn_args: dict) -> str:
+    """Dispatch AI tool calls to existing bot data functions. Returns plain text."""
+    try:
+        if fn_name == "get_scoreboard":
+            games, meta = await get_scoreboard_data()
+            if not games:
+                return "No games scheduled this week."
+            lines = [f"**{meta.get('display', 'NFL Scoreboard')}**"]
+            for g in games[:10]:
+                a, h = g["away_team"], g["home_team"]
+                score = f"{a} {g['away_score']} – {g['home_score']} {h}"
+                lines.append(f"{score}  ({g['state']})")
+            return "\n".join(lines)
+
+        elif fn_name == "get_headlines":
+            items = await get_news_items(5)
+            if not items:
+                return "No headlines right now."
+            return "\n".join(
+                f"• {i['headline']}  [{i.get('source','ESPN')}]" for i in items
+            )
+
+        elif fn_name == "get_player_stats":
+            name = fn_args.get("player_name", "")
+            profile = await fetch_full_player_profile(name)
+            if not profile:
+                return f"Couldn't find a player named '{name}'."
+            team = TEAM_NAMES.get(profile.get("team", ""), profile.get("team", "N/A"))
+            pos  = profile.get("position", "N/A")
+            num  = profile.get("jersey") or "N/A"
+            stats_info = ""
+            blocks = profile.get("stats") or []
+            for block in blocks[:1]:
+                lines = []
+                for s in (block.get("stats") or [])[:4]:
+                    if isinstance(s, dict):
+                        n = s.get("displayName") or s.get("name")
+                        v = s.get("displayValue") or s.get("value")
+                        if n and v is not None:
+                            lines.append(f"{n}: {v}")
+                if lines:
+                    stats_info = "  |  " + " • ".join(lines)
+            return f"**{profile['name']}** — {pos}, {team}, #{num}{stats_info}"
+
+        elif fn_name == "get_team_schedule":
+            team = fn_args.get("team", "").upper().strip()
+            if team not in TEAM_NAMES:
+                match = next((a for a, n in TEAM_NAMES.items() if team in n.upper()), None)
+                if match:
+                    team = match
+                else:
+                    return f"Unknown team '{fn_args.get('team')}'. Try KC, DAL, SF, etc."
+            sched = await get_team_schedule(team)
+            recent   = [g for g in sched["games"] if g["completed"]][-3:]
+            upcoming = [g for g in sched["games"] if not g["completed"]][:3]
+            lines = [f"**{TEAM_NAMES[team]}** ({sched['record']})"]
+            for g in recent:
+                lines.append(f"  {'✅' if g['result']=='W' else '❌'} {g['result']} {g['our_score']}-{g['opp_score']} {g['location']} {g['opp_abbr']}")
+            for g in upcoming:
+                date = g["game_dt"].strftime("%b %-d") if g.get("game_dt") else "TBD"
+                lines.append(f"  🗓 {date}  {g['location']} {g['opp_abbr']}")
+            return "\n".join(lines)
+
+        elif fn_name == "get_trade_news":
+            sections = await get_trade_tracker_sections(limit=6)
+            lines = []
+            for item in sections.get("completed", [])[:2]:
+                lines.append(f"✅ {item['headline']}")
+            for item in sections.get("rumors", [])[:2]:
+                lines.append(f"👀 {item['headline']}")
+            return "\n".join(lines) if lines else "No trade news at the moment."
+
+        elif fn_name == "get_league_leaders":
+            data = await get_league_leaders()
+            offense = data.get("offense", {})
+            lines = []
+            for cat in ["Passing Yards", "Rushing Yards", "Receiving Yards"]:
+                players = offense.get(cat, [])
+                if players:
+                    p = players[0]
+                    lines.append(f"**{cat}:** {p['name']} ({p['team']}) — {p['value']}")
+            return "\n".join(lines) if lines else "No leaders data available right now."
+
+        elif fn_name == "coin_flip":
+            return random.choice(["🪙 **Heads!**", "🪙 **Tails!**"])
+
+        elif fn_name == "magic_8_ball":
+            return f"🎱 {random.choice(_MAGIC_8)}"
+
+        elif fn_name == "hot_take":
+            return f"🔥 **Hot Take:** {random.choice(_HOT_TAKES)}"
+
+        elif fn_name == "trivia":
+            q, a = random.choice(_NFL_TRIVIA)
+            return f"🏈 **NFL Trivia:** {q}\n||{a}||"
+
+        else:
+            return f"(Tool '{fn_name}' not implemented yet)"
+
+    except Exception as exc:
+        log.error("AI tool %s error: %s", fn_name, exc)
+        return f"Couldn't fetch that data right now ({exc})."
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  AI — on_message handler  (@mention / conversation mode / AI channels)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.event
+async def on_message(message: discord.Message):
+    # Ignore bots and DMs
+    if message.author.bot:
+        return
+    if not message.guild:
+        return
+
+    bot_mentioned = bot.user in (message.mentions or [])
+    replying_to_bot = (
+        message.reference
+        and message.reference.resolved
+        and isinstance(message.reference.resolved, discord.Message)
+        and message.reference.resolved.author == bot.user
+    )
+
+    guild_id  = str(message.guild.id)
+    ch_id_str = str(message.channel.id)
+    settings  = get_server_settings(guild_id)
+    mode      = settings.get("interaction_mode", "mention_only")
+    ai_chans  = [str(c) for c in settings.get("ai_channels", [])]
+    in_ai_ch  = ch_id_str in ai_chans
+    conv_live = _conv.is_active(message.channel.id)
+
+    # Decide whether to engage
+    if mode == "silent":
+        await bot.process_commands(message)
+        return
+
+    should_respond = (
+        bot_mentioned
+        or (mode in ("mention_replies", "community") and replying_to_bot)
+        or (mode in ("ai_channel", "community") and in_ai_ch)
+        or (mode != "silent" and conv_live)
+    )
+
+    if not should_respond:
+        await bot.process_commands(message)
+        return
+
+    # Rate limit
+    if not _cd.is_allowed(message.author.id, message.channel.id):
+        await bot.process_commands(message)
+        return
+
+    # Strip @mention text
+    content = message.content or ""
+    if bot.user:
+        content = (
+            content
+            .replace(f"<@{bot.user.id}>", "")
+            .replace(f"<@!{bot.user.id}>", "")
+            .strip()
+        )
+    if not content:
+        content = "Hey!"
+
+    # Keep / refresh conversation window
+    if bot_mentioned or conv_live:
+        _conv.activate(message.channel.id)
+
+    _cd.stamp(message.author.id, message.channel.id)
+
+    if ai_brain is None:
+        await message.reply("My AI brain isn't online yet — give me a second and try again. 🤖")
+        await bot.process_commands(message)
+        return
+
+    async with message.channel.typing():
+        reply = await ai_brain.process_message(
+            content    = content,
+            guild_id   = guild_id,
+            user_id    = str(message.author.id),
+            user_name  = message.author.display_name,
+            channel_id = ch_id_str,
+            settings   = settings,
+        )
+
+    if reply:
+        # Discord 2000-char limit
+        chunks = [reply[i:i+2000] for i in range(0, len(reply), 2000)]
+        for chunk in chunks:
+            await message.reply(chunk)
+
+    await bot.process_commands(message)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  AI — Slash commands
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="ask", description="Ask USO anything — AI-powered response")
+@app_commands.describe(question="Your question or message")
+async def ask(interaction: discord.Interaction, question: str):
+    await interaction.response.defer()
+    if ai_brain is None:
+        await interaction.followup.send("My brain is still warming up — try again in a moment. 🤖")
+        return
+    guild_id  = str(interaction.guild_id) if interaction.guild_id else "0"
+    ch_id     = str(interaction.channel_id)
+    settings  = get_server_settings(guild_id)
+    user_name = interaction.user.display_name
+
+    async with interaction.channel.typing():  # type: ignore[union-attr]
+        reply = await ai_brain.process_message(
+            content    = question,
+            guild_id   = guild_id,
+            user_id    = str(interaction.user.id),
+            user_name  = user_name,
+            channel_id = ch_id,
+            settings   = settings,
+        )
+    if reply:
+        chunks = [reply[i:i+2000] for i in range(0, len(reply), 2000)]
+        await interaction.followup.send(chunks[0])
+        for chunk in chunks[1:]:
+            await interaction.followup.send(chunk)
+    else:
+        await interaction.followup.send("Hmm, I got nothing. Try again. 🤷")
+
+
+@bot.tree.command(name="ai-settings", description="Configure USO's AI personality for this server")
+@app_commands.describe(
+    humor="Humor level",
+    roast="Roast level",
+    emoji="Emoji usage",
+    mode="How USO participates in chat",
+)
+@app_commands.choices(
+    humor=[
+        app_commands.Choice(name="Professional", value="professional"),
+        app_commands.Choice(name="Casual",       value="casual"),
+        app_commands.Choice(name="Funny",        value="funny"),
+        app_commands.Choice(name="Chaotic",      value="chaotic"),
+    ],
+    roast=[
+        app_commands.Choice(name="Off",    value="off"),
+        app_commands.Choice(name="Light",  value="light"),
+        app_commands.Choice(name="Medium", value="medium"),
+        app_commands.Choice(name="Savage", value="savage"),
+    ],
+    emoji=[
+        app_commands.Choice(name="Minimal",  value="minimal"),
+        app_commands.Choice(name="Balanced", value="balanced"),
+        app_commands.Choice(name="Heavy",    value="heavy"),
+    ],
+    mode=[
+        app_commands.Choice(name="Silent",             value="silent"),
+        app_commands.Choice(name="Mention Only",       value="mention_only"),
+        app_commands.Choice(name="Mention + Replies",  value="mention_replies"),
+        app_commands.Choice(name="AI Channel",         value="ai_channel"),
+        app_commands.Choice(name="Community Mode",     value="community"),
+    ],
+)
+async def ai_settings(
+    interaction: discord.Interaction,
+    humor: str | None = None,
+    roast: str | None = None,
+    emoji: str | None = None,
+    mode:  str | None = None,
+):
+    await interaction.response.defer(ephemeral=True)
+    guild_id = str(interaction.guild_id)
+    updates  = {}
+    if humor: updates["humor_level"]      = humor
+    if roast: updates["roast_level"]      = roast
+    if emoji: updates["emoji_usage"]      = emoji
+    if mode:  updates["interaction_mode"] = mode
+
+    if updates:
+        upsert_server_settings(guild_id, **updates)
+
+    s = get_server_settings(guild_id)
+    embed = discord.Embed(title="🤖 USO AI Settings", color=0x7A5C2E)
+    embed.add_field(name="Humor Level",       value=s["humor_level"].title(),      inline=True)
+    embed.add_field(name="Roast Level",       value=s["roast_level"].title(),      inline=True)
+    embed.add_field(name="Emoji Usage",       value=s["emoji_usage"].title(),      inline=True)
+    embed.add_field(name="Interaction Mode",  value=s["interaction_mode"].replace("_"," ").title(), inline=True)
+    ai_chs = s.get("ai_channels", [])
+    ch_mentions = " ".join(f"<#{c}>" for c in ai_chs) if ai_chs else "None"
+    embed.add_field(name="AI Channels", value=ch_mentions, inline=False)
+    embed.set_footer(text="USO Bot • AI Settings")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="ai-channel", description="Add or remove an AI channel where USO replies freely")
+@app_commands.describe(
+    action="Add or remove",
+    channel="The channel to configure",
+)
+@app_commands.choices(action=[
+    app_commands.Choice(name="Add",    value="add"),
+    app_commands.Choice(name="Remove", value="remove"),
+])
+async def ai_channel(
+    interaction: discord.Interaction,
+    action:  str,
+    channel: discord.TextChannel,
+):
+    await interaction.response.defer(ephemeral=True)
+    guild_id = str(interaction.guild_id)
+    settings = get_server_settings(guild_id)
+    chans    = [str(c) for c in settings.get("ai_channels", [])]
+    cid      = str(channel.id)
+
+    if action == "add":
+        if cid not in chans:
+            chans.append(cid)
+        msg = f"✅ {channel.mention} added as an AI channel. USO will reply to all messages there."
+    else:
+        chans = [c for c in chans if c != cid]
+        msg = f"✅ {channel.mention} removed from AI channels."
+
+    upsert_server_settings(guild_id, ai_channels=chans)
+    await interaction.followup.send(msg, ephemeral=True)
+
+
+@bot.tree.command(name="morning-checkin", description="Configure USO's daily morning check-in message")
+@app_commands.describe(
+    enabled  = "Turn the morning check-in on or off",
+    hour     = "Hour to post (0-23, 24h format)",
+    minute   = "Minute to post (0-59)",
+    timezone = "Timezone, e.g. America/New_York",
+    channel  = "Channel to post in",
+)
+async def morning_checkin(
+    interaction: discord.Interaction,
+    enabled:  bool,
+    channel:  discord.TextChannel | None = None,
+    hour:     int | None = None,
+    minute:   int | None = None,
+    timezone: str = "America/New_York",
+):
+    await interaction.response.defer(ephemeral=True)
+    guild_id = str(interaction.guild_id)
+    settings = get_server_settings(guild_id)
+    cfg      = settings.get("morning_checkin") or {}
+
+    cfg["enabled"] = enabled
+    if channel:  cfg["channel_id"] = str(channel.id)
+    if hour   is not None: cfg["time"] = f"{hour:02d}:{(minute or 0):02d}"
+    if timezone: cfg["timezone"] = timezone
+
+    upsert_server_settings(guild_id, morning_checkin=cfg)
+    status = "✅ enabled" if enabled else "⛔ disabled"
+    time_str = cfg.get("time", "08:00")
+    ch_str   = f"<#{cfg['channel_id']}>" if cfg.get("channel_id") else "not set"
+    await interaction.followup.send(
+        f"Morning check-in {status}  •  **{time_str}** {cfg.get('timezone','ET')}  •  channel: {ch_str}",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="night-checkin", description="Configure USO's daily night check-in message")
+@app_commands.describe(
+    enabled  = "Turn the night check-in on or off",
+    hour     = "Hour to post (0-23, 24h format)",
+    minute   = "Minute to post (0-59)",
+    timezone = "Timezone, e.g. America/New_York",
+    channel  = "Channel to post in",
+)
+async def night_checkin(
+    interaction: discord.Interaction,
+    enabled:  bool,
+    channel:  discord.TextChannel | None = None,
+    hour:     int | None = None,
+    minute:   int | None = None,
+    timezone: str = "America/New_York",
+):
+    await interaction.response.defer(ephemeral=True)
+    guild_id = str(interaction.guild_id)
+    settings = get_server_settings(guild_id)
+    cfg      = settings.get("night_checkin") or {}
+
+    cfg["enabled"] = enabled
+    if channel:  cfg["channel_id"] = str(channel.id)
+    if hour   is not None: cfg["time"] = f"{hour:02d}:{(minute or 0):02d}"
+    if timezone: cfg["timezone"] = timezone
+
+    upsert_server_settings(guild_id, night_checkin=cfg)
+    status = "✅ enabled" if enabled else "⛔ disabled"
+    time_str = cfg.get("time", "21:00")
+    ch_str   = f"<#{cfg['channel_id']}>" if cfg.get("channel_id") else "not set"
+    await interaction.followup.send(
+        f"Night check-in {status}  •  **{time_str}** {cfg.get('timezone','ET')}  •  channel: {ch_str}",
+        ephemeral=True,
+    )
+
+
+# ── Check-in loop (runs every minute) ────────────────────────────────────────
+@tasks.loop(minutes=1)
+async def checkin_loop():
+    if ai_brain is None:
+        return
+    try:
+        _conv.cleanup()
+        await run_checkins(bot, ai_brain, get_server_settings, recall_server)
+    except Exception as exc:
+        log.error("checkin_loop error: %s", exc)
+
+
 
 
 @bot.event
 async def on_ready():
-    global session
+    global session, ai_brain
 
     if session is None:
         session = aiohttp.ClientSession()
+
+    # Initialise SQLite tables
+    try:
+        init_db()
+        print("Database initialised.")
+    except Exception as e:
+        print(f"Database init error: {e}")
+
+    # Build AI brain
+    if ai_brain is None:
+        ai_brain = AIBrain(tools_executor=_ai_tools_executor)
+        status = "online ✅" if ai_brain.available else "offline (no OPENAI_API_KEY) ⚠️"
+        print(f"AI brain {status}")
 
     if not PLAYER_INDEX:
         try:
@@ -2244,6 +2721,9 @@ async def on_ready():
 
     if not nflwatch_loop.is_running():
         nflwatch_loop.start()
+
+    if not checkin_loop.is_running():
+        checkin_loop.start()
 
     print(f"BOT READY - Logged in as {bot.user}")
 

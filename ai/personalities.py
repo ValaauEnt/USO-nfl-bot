@@ -49,6 +49,17 @@ EMOJI_INSTRUCTIONS = {
     "heavy":    "Emoji energy is welcome. Use freely.",
 }
 
+RESPONSE_LENGTH_INSTRUCTIONS = {
+    "short": (
+        "Keep responses VERY SHORT — 1 to 2 sentences max. "
+        "Be punchy and direct. No padding, no lists, no paragraphs."
+    ),
+    "long": (
+        "You may give longer, detailed responses when the question calls for it. "
+        "Break things down, add context, go deep. Still avoid rambling — every sentence should earn its place."
+    ),
+}
+
 # Context → personality blend rules
 CONTEXT_RULES = """
 ## Personality Selection
@@ -74,9 +85,10 @@ def build_system_prompt(
     user_memories: dict | None = None,
     server_memories: dict | None = None,
 ) -> str:
-    humor = HUMOR_INSTRUCTIONS.get(settings.get("humor_level", "funny"), HUMOR_INSTRUCTIONS["funny"])
-    roast = ROAST_INSTRUCTIONS.get(settings.get("roast_level", "light"), ROAST_INSTRUCTIONS["light"])
-    emoji = EMOJI_INSTRUCTIONS.get(settings.get("emoji_usage", "balanced"), EMOJI_INSTRUCTIONS["balanced"])
+    humor  = HUMOR_INSTRUCTIONS.get(settings.get("humor_level", "funny"), HUMOR_INSTRUCTIONS["funny"])
+    roast  = ROAST_INSTRUCTIONS.get(settings.get("roast_level", "light"), ROAST_INSTRUCTIONS["light"])
+    emoji  = EMOJI_INSTRUCTIONS.get(settings.get("emoji_usage", "balanced"), EMOJI_INSTRUCTIONS["balanced"])
+    length = RESPONSE_LENGTH_INSTRUCTIONS.get(settings.get("response_length", "short"), RESPONSE_LENGTH_INSTRUCTIONS["short"])
 
     prompt = CORE_TRAITS
     prompt += f"""
@@ -84,6 +96,7 @@ def build_system_prompt(
 - Humor: {humor}
 - Roasting: {roast}
 - Emojis: {emoji}
+- Response Length: {length}
 
 {CONTEXT_RULES}
 

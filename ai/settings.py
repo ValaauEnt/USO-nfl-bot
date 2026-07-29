@@ -16,6 +16,14 @@ def _get_conn() -> sqlite3.Connection:
 def init_db():
     """Create all tables if they don't exist."""
     with _get_conn() as conn:
+        # Migrate: add response_length column to existing DBs
+        try:
+            conn.execute(
+                "ALTER TABLE server_settings ADD COLUMN response_length TEXT DEFAULT 'short'"
+            )
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS server_settings (
                 guild_id         TEXT PRIMARY KEY,
@@ -25,6 +33,7 @@ def init_db():
                 emoji_usage      TEXT DEFAULT 'balanced',
                 profanity        TEXT DEFAULT 'none',
                 interaction_mode TEXT DEFAULT 'mention_only',
+                response_length  TEXT DEFAULT 'short',
                 ai_channels      TEXT DEFAULT '[]',
                 morning_checkin  TEXT DEFAULT '{}',
                 night_checkin    TEXT DEFAULT '{}'
@@ -69,6 +78,7 @@ def get_server_settings(guild_id: str) -> dict:
             "emoji_usage": "balanced",
             "profanity": "none",
             "interaction_mode": "mention_only",
+            "response_length": "short",
             "ai_channels": [],
             "morning_checkin": {},
             "night_checkin": {},
@@ -81,6 +91,7 @@ def get_server_settings(guild_id: str) -> dict:
         "emoji_usage":      row["emoji_usage"],
         "profanity":        row["profanity"],
         "interaction_mode": row["interaction_mode"],
+        "response_length":  row["response_length"] or "short",
         "ai_channels":      json.loads(row["ai_channels"] or "[]"),
         "morning_checkin":  json.loads(row["morning_checkin"] or "{}"),
         "night_checkin":    json.loads(row["night_checkin"] or "{}"),
@@ -96,8 +107,9 @@ def upsert_server_settings(guild_id: str, **kwargs):
         conn.execute("""
             INSERT INTO server_settings
                 (guild_id, humor_level, roast_level, meme_level, emoji_usage,
-                 profanity, interaction_mode, ai_channels, morning_checkin, night_checkin)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 profanity, interaction_mode, response_length,
+                 ai_channels, morning_checkin, night_checkin)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id) DO UPDATE SET
                 humor_level      = excluded.humor_level,
                 roast_level      = excluded.roast_level,
@@ -105,6 +117,7 @@ def upsert_server_settings(guild_id: str, **kwargs):
                 emoji_usage      = excluded.emoji_usage,
                 profanity        = excluded.profanity,
                 interaction_mode = excluded.interaction_mode,
+                response_length  = excluded.response_length,
                 ai_channels      = excluded.ai_channels,
                 morning_checkin  = excluded.morning_checkin,
                 night_checkin    = excluded.night_checkin
@@ -116,6 +129,7 @@ def upsert_server_settings(guild_id: str, **kwargs):
             settings["emoji_usage"],
             settings["profanity"],
             settings["interaction_mode"],
+            settings["response_length"],
             json.dumps(settings["ai_channels"]),
             json.dumps(settings["morning_checkin"]),
             json.dumps(settings["night_checkin"]),

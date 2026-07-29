@@ -2512,6 +2512,7 @@ async def ask(interaction: discord.Interaction, question: str):
     roast="Roast level",
     emoji="Emoji usage",
     mode="How Uce participates in chat",
+    response_length="How long Uce's answers are",
 )
 @app_commands.choices(
     humor=[
@@ -2538,31 +2539,38 @@ async def ask(interaction: discord.Interaction, question: str):
         app_commands.Choice(name="AI Channel",         value="ai_channel"),
         app_commands.Choice(name="Community Mode",     value="community"),
     ],
+    response_length=[
+        app_commands.Choice(name="Short (1-2 sentences)", value="short"),
+        app_commands.Choice(name="Long (detailed)",        value="long"),
+    ],
 )
 async def ai_settings(
     interaction: discord.Interaction,
-    humor: str | None = None,
-    roast: str | None = None,
-    emoji: str | None = None,
-    mode:  str | None = None,
+    humor:           str | None = None,
+    roast:           str | None = None,
+    emoji:           str | None = None,
+    mode:            str | None = None,
+    response_length: str | None = None,
 ):
     await interaction.response.defer(ephemeral=True)
     guild_id = str(interaction.guild_id)
     updates  = {}
-    if humor: updates["humor_level"]      = humor
-    if roast: updates["roast_level"]      = roast
-    if emoji: updates["emoji_usage"]      = emoji
-    if mode:  updates["interaction_mode"] = mode
+    if humor:           updates["humor_level"]      = humor
+    if roast:           updates["roast_level"]      = roast
+    if emoji:           updates["emoji_usage"]      = emoji
+    if mode:            updates["interaction_mode"] = mode
+    if response_length: updates["response_length"]  = response_length
 
     if updates:
         upsert_server_settings(guild_id, **updates)
 
     s = get_server_settings(guild_id)
     embed = discord.Embed(title="🤖 Uce AI Settings", color=0x7A5C2E)
-    embed.add_field(name="Humor Level",       value=s["humor_level"].title(),      inline=True)
-    embed.add_field(name="Roast Level",       value=s["roast_level"].title(),      inline=True)
-    embed.add_field(name="Emoji Usage",       value=s["emoji_usage"].title(),      inline=True)
-    embed.add_field(name="Interaction Mode",  value=s["interaction_mode"].replace("_"," ").title(), inline=True)
+    embed.add_field(name="Humor Level",      value=s["humor_level"].title(),      inline=True)
+    embed.add_field(name="Roast Level",      value=s["roast_level"].title(),      inline=True)
+    embed.add_field(name="Emoji Usage",      value=s["emoji_usage"].title(),      inline=True)
+    embed.add_field(name="Interaction Mode", value=s["interaction_mode"].replace("_"," ").title(), inline=True)
+    embed.add_field(name="Response Length",  value=s["response_length"].title(),  inline=True)
     ai_chs = s.get("ai_channels", [])
     ch_mentions = " ".join(f"<#{c}>" for c in ai_chs) if ai_chs else "None"
     embed.add_field(name="AI Channels", value=ch_mentions, inline=False)

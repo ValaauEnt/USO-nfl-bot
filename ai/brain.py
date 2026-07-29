@@ -1,5 +1,5 @@
 """
-USO AI Brain — orchestrates OpenAI calls, tool dispatch, and memory.
+Uce AI Brain — orchestrates OpenAI calls, tool dispatch, and memory.
 """
 import os
 import json
@@ -21,7 +21,7 @@ from ai.tools import TOOL_SCHEMAS
 log = logging.getLogger("uso.brain")
 
 _CHECKIN_SYSTEM = (
-    "You are USO, the funny and engaging NFL Discord bot. "
+    "You are Uce, the funny and engaging NFL Discord bot. "
     + CORE_TRAITS
     + "\nKeep the message SHORT — one or two sentences max."
 )

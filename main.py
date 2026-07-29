@@ -952,9 +952,9 @@ def build_scoreboard_embed(games: list[dict], meta: dict | None = None) -> disco
         embed.add_field(name=field_name[:256], value=(score_line + extra)[:1024], inline=False)
 
     if any_live:
-        embed.set_footer(text="🔴 LIVE • USO NFL Bot")
+        embed.set_footer(text="🔴 LIVE • Uce")
     else:
-        embed.set_footer(text="USO NFL Bot")
+        embed.set_footer(text="Uce")
 
     return embed
 
@@ -1003,7 +1003,7 @@ def build_news_embeds(items: list[dict]) -> list[discord.Embed]:
 
     # Add a shared footer on the last embed
     if embeds:
-        embeds[-1].set_footer(text="USO NFL Bot • ESPN")
+        embeds[-1].set_footer(text="Uce • ESPN")
 
     return embeds
 
@@ -1151,7 +1151,7 @@ def build_schedule_embed(schedule: dict, page: int = 0) -> discord.Embed:
     else:
         embed.add_field(name="Schedule", value="No games found.", inline=False)
 
-    embed.set_footer(text=f"USO NFL Bot • ESPN  •  Page {page + 1}/{total_pages}")
+    embed.set_footer(text=f"Uce • ESPN  •  Page {page + 1}/{total_pages}")
     return embed
 
 
@@ -1193,7 +1193,7 @@ def build_weekly_schedule_embed(games: list[dict], meta: dict) -> discord.Embed:
 
     if not games:
         embed.description = "No games scheduled this week."
-        embed.set_footer(text="USO NFL Bot • ESPN")
+        embed.set_footer(text="Uce • ESPN")
         return embed
 
     lines = []
@@ -1233,7 +1233,7 @@ def build_weekly_schedule_embed(games: list[dict], meta: dict) -> discord.Embed:
     if lines[mid:]:
         embed.add_field(name="\u200b", value="\n".join(lines[mid:]), inline=False)
 
-    embed.set_footer(text="USO NFL Bot • ESPN  •  ◀ ▶ to browse weeks")
+    embed.set_footer(text="Uce • ESPN  •  ◀ ▶ to browse weeks")
     return embed
 
 
@@ -1326,7 +1326,7 @@ def build_trade_tracker_embed(sections: dict) -> discord.Embed:
     embed.add_field(name="Completed / Strong Signals", value=block(sections["completed"]), inline=False)
     embed.add_field(name="Rumors / Reports", value=block(sections["rumors"]), inline=False)
     embed.add_field(name="Other Trade Headlines", value=block(sections["other"]), inline=False)
-    embed.set_footer(text="USO NFL Bot")
+    embed.set_footer(text="Uce")
     return embed
 
 
@@ -1350,7 +1350,7 @@ def build_market_watch_embed(sections: dict) -> discord.Embed:
     embed.add_field(name="🔁 Trades", value=format_block(sections["trades"]), inline=False)
     embed.add_field(name="💰 Contracts", value=format_block(sections["contracts"]), inline=False)
     embed.add_field(name="📝 Other Moves", value=format_block(sections["other"]), inline=False)
-    embed.set_footer(text="USO NFL Bot • Live market watch")
+    embed.set_footer(text="Uce • Live market watch")
     return embed
 
 
@@ -1380,7 +1380,7 @@ def build_leaders_embed(data: dict, mode: str) -> discord.Embed:
     if not any(groups.get(c) for c in cat_order):
         embed.description = "No stats available right now."
 
-    embed.set_footer(text="USO NFL Bot • ESPN")
+    embed.set_footer(text="Uce • ESPN")
     return embed
 
 
@@ -1452,9 +1452,9 @@ def build_player_stats_embed(player: dict) -> discord.Embed:
 
     source_label = player.get("profile_source", "ESPN")
     if player.get("team_logo"):
-        embed.set_footer(text=f"USO NFL Bot • {source_label}", icon_url=player["team_logo"])
+        embed.set_footer(text=f"Uce • {source_label}", icon_url=player["team_logo"])
     else:
-        embed.set_footer(text=f"USO NFL Bot • {source_label}")
+        embed.set_footer(text=f"Uce • {source_label}")
 
     # Stats come merged into player["stats"] by fetch_full_player_profile
     statistics = player.get("stats") or []
@@ -1620,7 +1620,7 @@ def build_season_stats_embed(player: dict, season_block: dict, page: int, total:
         value = "\n".join(section["lines"][:12]) if section["lines"] else "No stats"
         embed.add_field(name=section["title"][:256], value=value[:1024], inline=False)
 
-    embed.set_footer(text=f"Season {page + 1}/{total} • USO NFL Bot")
+    embed.set_footer(text=f"Season {page + 1}/{total} • Uce")
     return embed
 
 
@@ -1694,7 +1694,7 @@ class SeasonStatsView(discord.ui.View):
         else:
             embed.add_field(name="No Data", value="No game log entries available.", inline=False)
 
-        embed.set_footer(text="USO NFL Bot")
+        embed.set_footer(text="Uce")
         return embed
 
 
@@ -1932,10 +1932,10 @@ def _build_single_news_embed(item: dict, breaking: bool = False) -> discord.Embe
     if published:
         _ET = ZoneInfo("America/New_York")
         embed.set_footer(
-            text=f"USO NFL Bot • {source} • {published.astimezone(_ET).strftime('%b %d, %Y %I:%M %p ET')}"
+            text=f"Uce • {source} • {published.astimezone(_ET).strftime('%b %d, %Y %I:%M %p ET')}"
         )
     else:
-        embed.set_footer(text=f"USO NFL Bot • {source}")
+        embed.set_footer(text=f"Uce • {source}")
     return embed
 
 
@@ -1959,7 +1959,7 @@ async def nflwatch_loop():
     sections = await get_market_watch_sections()
     embed = build_market_watch_embed(sections)
     now_et = datetime.now(_EASTERN)
-    embed.set_footer(text=f"USO NFL Bot • Auto-posted {now_et.strftime('%I:%M %p ET • %b %d, %Y')}")
+    embed.set_footer(text=f"Uce • Auto-posted {now_et.strftime('%I:%M %p ET • %b %d, %Y')}")
     await channel.send(embed=embed)
 
 
@@ -2161,7 +2161,7 @@ async def create_channel(
             description=f"{ch_type} channel {ch.mention} has been created{loc}.",
             color=0x7A5C2E,
         )
-        embed.set_footer(text="USO Bot • Server Management")
+        embed.set_footer(text="Uce • Server Management")
         await interaction.followup.send(embed=embed)
     except discord.Forbidden:
         await interaction.followup.send("❌ I don't have permission to create channels. Make sure I have the **Manage Channels** permission.", ephemeral=True)
@@ -2184,7 +2184,7 @@ async def delete_channel(
             description=f"Channel **#{name}** has been deleted.",
             color=0x7A5C2E,
         )
-        embed.set_footer(text="USO Bot • Server Management")
+        embed.set_footer(text="Uce • Server Management")
         await interaction.followup.send(embed=embed)
     except discord.Forbidden:
         await interaction.followup.send("❌ I don't have permission to delete channels. Make sure I have the **Manage Channels** permission.", ephemeral=True)
@@ -2204,7 +2204,7 @@ async def rename_server(interaction: discord.Interaction, name: str):
             description=f"**{old_name}** → **{name}**",
             color=0x7A5C2E,
         )
-        embed.set_footer(text="USO Bot • Server Management")
+        embed.set_footer(text="Uce • Server Management")
         await interaction.followup.send(embed=embed)
     except discord.Forbidden:
         await interaction.followup.send("❌ I don't have permission to rename the server. Make sure I have the **Manage Server** permission.", ephemeral=True)
@@ -2223,7 +2223,7 @@ async def create_category(interaction: discord.Interaction, name: str):
             description=f"Category **{cat.name}** has been created.",
             color=0x7A5C2E,
         )
-        embed.set_footer(text="USO Bot • Server Management")
+        embed.set_footer(text="Uce • Server Management")
         await interaction.followup.send(embed=embed)
     except discord.Forbidden:
         await interaction.followup.send("❌ I don't have permission to create categories. Make sure I have the **Manage Channels** permission.", ephemeral=True)
@@ -2467,7 +2467,7 @@ async def on_message(message: discord.Message):
 #  AI — Slash commands
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="ask", description="Ask USO anything — AI-powered response")
+@bot.tree.command(name="ask", description="Ask Uce anything — AI-powered response")
 @app_commands.describe(question="Your question or message")
 async def ask(interaction: discord.Interaction, question: str):
     await interaction.response.defer()
@@ -2497,12 +2497,12 @@ async def ask(interaction: discord.Interaction, question: str):
         await interaction.followup.send("Hmm, I got nothing. Try again. 🤷")
 
 
-@bot.tree.command(name="ai-settings", description="Configure USO's AI personality for this server")
+@bot.tree.command(name="ai-settings", description="Configure Uce's AI personality for this server")
 @app_commands.describe(
     humor="Humor level",
     roast="Roast level",
     emoji="Emoji usage",
-    mode="How USO participates in chat",
+    mode="How Uce participates in chat",
 )
 @app_commands.choices(
     humor=[
@@ -2549,7 +2549,7 @@ async def ai_settings(
         upsert_server_settings(guild_id, **updates)
 
     s = get_server_settings(guild_id)
-    embed = discord.Embed(title="🤖 USO AI Settings", color=0x7A5C2E)
+    embed = discord.Embed(title="🤖 Uce AI Settings", color=0x7A5C2E)
     embed.add_field(name="Humor Level",       value=s["humor_level"].title(),      inline=True)
     embed.add_field(name="Roast Level",       value=s["roast_level"].title(),      inline=True)
     embed.add_field(name="Emoji Usage",       value=s["emoji_usage"].title(),      inline=True)
@@ -2557,11 +2557,11 @@ async def ai_settings(
     ai_chs = s.get("ai_channels", [])
     ch_mentions = " ".join(f"<#{c}>" for c in ai_chs) if ai_chs else "None"
     embed.add_field(name="AI Channels", value=ch_mentions, inline=False)
-    embed.set_footer(text="USO Bot • AI Settings")
+    embed.set_footer(text="Uce • AI Settings")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="ai-channel", description="Add or remove an AI channel where USO replies freely")
+@bot.tree.command(name="ai-channel", description="Add or remove an AI channel where Uce replies freely")
 @app_commands.describe(
     action="Add or remove",
     channel="The channel to configure",
@@ -2584,7 +2584,7 @@ async def ai_channel(
     if action == "add":
         if cid not in chans:
             chans.append(cid)
-        msg = f"✅ {channel.mention} added as an AI channel. USO will reply to all messages there."
+        msg = f"✅ {channel.mention} added as an AI channel. Uce will reply to all messages there."
     else:
         chans = [c for c in chans if c != cid]
         msg = f"✅ {channel.mention} removed from AI channels."
@@ -2593,7 +2593,7 @@ async def ai_channel(
     await interaction.followup.send(msg, ephemeral=True)
 
 
-@bot.tree.command(name="morning-checkin", description="Configure USO's daily morning check-in message")
+@bot.tree.command(name="morning-checkin", description="Configure Uce's daily morning check-in message")
 @app_commands.describe(
     enabled  = "Turn the morning check-in on or off",
     hour     = "Hour to post (0-23, 24h format)",
@@ -2629,7 +2629,7 @@ async def morning_checkin(
     )
 
 
-@bot.tree.command(name="night-checkin", description="Configure USO's daily night check-in message")
+@bot.tree.command(name="night-checkin", description="Configure Uce's daily night check-in message")
 @app_commands.describe(
     enabled  = "Turn the night check-in on or off",
     hour     = "Hour to post (0-23, 24h format)",
@@ -2748,7 +2748,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 TOS_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>USO Bot — Terms of Service</title>
+<title>Uce — Terms of Service</title>
 <style>
   body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.7}
   h1{color:#7A5C2E}h2{color:#333;margin-top:2em}
@@ -2756,14 +2756,14 @@ TOS_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>🏈 USO Bot — Terms of Service</h1>
+<h1>🏈 Uce — Terms of Service</h1>
 <p><strong>Last updated: July 2025</strong></p>
 
 <h2>1. Acceptance</h2>
-<p>By adding USO Bot to your Discord server or using any of its commands, you agree to these Terms of Service. If you do not agree, do not use the bot.</p>
+<p>By adding Uce to your Discord server or using any of its commands, you agree to these Terms of Service. If you do not agree, do not use the bot.</p>
 
 <h2>2. Description of Service</h2>
-<p>USO Bot provides NFL-related information including live scores, player statistics, trade headlines, and league leaders. All data is sourced from publicly available APIs (primarily ESPN). The bot does not guarantee the accuracy, completeness, or timeliness of any information provided.</p>
+<p>Uce provides NFL-related information including live scores, player statistics, trade headlines, and league leaders. All data is sourced from publicly available APIs (primarily ESPN). The bot does not guarantee the accuracy, completeness, or timeliness of any information provided.</p>
 
 <h2>3. Acceptable Use</h2>
 <p>You agree not to:</p>
@@ -2775,13 +2775,13 @@ TOS_HTML = """<!DOCTYPE html>
 </ul>
 
 <h2>4. Data &amp; Privacy</h2>
-<p>USO Bot does not collect, store, or share personal data about users. Commands are processed in real time and no message content or user identifiers are retained. See our <a href="/privacy">Privacy Policy</a> for details.</p>
+<p>Uce does not collect, store, or share personal data about users. Commands are processed in real time and no message content or user identifiers are retained. See our <a href="/privacy">Privacy Policy</a> for details.</p>
 
 <h2>5. Disclaimer of Warranties</h2>
 <p>The bot is provided "as is" without warranty of any kind. We make no guarantees regarding uptime, data accuracy, or fitness for a particular purpose. NFL statistics and news are provided for informational purposes only.</p>
 
 <h2>6. Limitation of Liability</h2>
-<p>The creators of USO Bot are not liable for any direct, indirect, incidental, or consequential damages arising from your use of the bot.</p>
+<p>The creators of Uce are not liable for any direct, indirect, incidental, or consequential damages arising from your use of the bot.</p>
 
 <h2>7. Changes to Terms</h2>
 <p>These terms may be updated at any time. Continued use of the bot after changes constitutes acceptance of the revised terms.</p>
@@ -2789,14 +2789,14 @@ TOS_HTML = """<!DOCTYPE html>
 <h2>8. Contact</h2>
 <p>For questions or concerns, please reach out through your Discord server's administration.</p>
 
-<footer>USO Bot &mdash; Unofficial. Not affiliated with the NFL or ESPN.</footer>
+<footer>Uce &mdash; Unofficial. Not affiliated with the NFL or ESPN.</footer>
 </body>
 </html>"""
 
 PRIVACY_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>USO Bot — Privacy Policy</title>
+<title>Uce — Privacy Policy</title>
 <style>
   body{font-family:system-ui,sans-serif;max-width:760px;margin:40px auto;padding:0 24px;color:#1a1a1a;line-height:1.7}
   h1{color:#7A5C2E}h2{color:#333;margin-top:2em}
@@ -2804,11 +2804,11 @@ PRIVACY_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<h1>🏈 USO Bot — Privacy Policy</h1>
+<h1>🏈 Uce — Privacy Policy</h1>
 <p><strong>Last updated: July 2025</strong></p>
 
 <h2>1. Information We Collect</h2>
-<p>USO Bot does <strong>not</strong> collect or store any personal information. Specifically:</p>
+<p>Uce does <strong>not</strong> collect or store any personal information. Specifically:</p>
 <ul>
   <li>We do not log Discord usernames, IDs, or message content</li>
   <li>We do not store command history or usage data</li>
@@ -2830,7 +2830,7 @@ PRIVACY_HTML = """<!DOCTYPE html>
 <h2>6. Contact</h2>
 <p>Questions about this policy can be directed to your server's administration.</p>
 
-<footer>USO Bot &mdash; Unofficial. Not affiliated with the NFL or ESPN.</footer>
+<footer>Uce &mdash; Unofficial. Not affiliated with the NFL or ESPN.</footer>
 </body>
 </html>"""
 
@@ -2840,7 +2840,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>USO NFL Bot — Dashboard</title>
+<title>Uce — Dashboard</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'Segoe UI',system-ui,sans-serif;background:#0d0d0d;color:#e0e0e0;min-height:100vh}
@@ -2876,7 +2876,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <header>
   <span class="logo">🏈</span>
   <div>
-    <h1>USO NFL Bot</h1>
+    <h1>Uce</h1>
     <p>Live NFL scores, news, stats &amp; more</p>
   </div>
   <a class="invite-btn" id="inviteBtn" href="/invite" target="_blank">
@@ -2948,7 +2948,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <footer>
   <a href="/tos">Terms of Service</a> &nbsp;·&nbsp; <a href="/privacy">Privacy Policy</a>
-  &nbsp;·&nbsp; USO NFL Bot — Unofficial. Not affiliated with the NFL or ESPN.
+  &nbsp;·&nbsp; Uce — Unofficial. Not affiliated with the NFL or ESPN.
 </footer>
 
 <script>

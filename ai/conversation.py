@@ -1,8 +1,8 @@
 """
 Conversation mode tracking.
 
-After USO is @mentioned, it stays active in that channel for CONVERSATION_TTL seconds.
-During this window users don't need to @mention — USO follows the conversation naturally.
+After Uce is @mentioned, it stays active in that channel for CONVERSATION_TTL seconds.
+During this window users don't need to @mention — Uce follows the conversation naturally.
 """
 import time
 

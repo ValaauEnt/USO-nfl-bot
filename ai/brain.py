@@ -87,7 +87,7 @@ class AIBrain:
         append_conversation(channel_id, "user", content)
 
         # ── First OpenAI call ─────────────────────────────────────────────────
-        max_tok = 150 if settings.get("response_length", "short") == "short" else 600
+        max_tok = 350 if settings.get("response_length", "short") == "short" else 600
         try:
             resp = await self.client.chat.completions.create(
                 model="gpt-4o-mini",

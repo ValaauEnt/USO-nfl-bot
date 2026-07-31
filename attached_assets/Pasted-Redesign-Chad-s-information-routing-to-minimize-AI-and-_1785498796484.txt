@@ -1,0 +1,204 @@
+Redesign Chad's information routing to minimize AI and web search costs while always providing accurate answers.
+
+PRIORITY ORDER
+
+LEVEL 1 (FREE / CHEAPEST)
+Use existing APIs first.
+
+Examples:
+
+NFL
+- ESPN Scoreboard API
+- ESPN Schedule API
+- ESPN Standings API
+- ESPN Team API
+- ESPN Roster API
+- ESPN Player API
+- ESPN Statistics API
+- ESPN News API
+- ESPN Transactions API
+- ESPN Injury API
+
+Use these whenever possible before calling AI.
+
+Examples:
+
+"What was Josh Allen's stats last game?"
+→ ESPN Stats
+
+"What happened in yesterday's Chiefs game?"
+→ ESPN Game Summary
+
+"Show me the standings."
+→ ESPN Standings
+
+"When do the Cowboys play?"
+→ ESPN Schedule
+
+"Who won last night?"
+→ ESPN Scoreboard
+
+"What team does Tua play for?"
+→ ESPN Player/Roster API
+
+"Any NFL news?"
+→ ESPN News API first.
+
+-------------------------------------------------
+
+LEVEL 2 (LIVE WEB SEARCH)
+
+Only use web search if ESPN (or another supported API) cannot answer.
+
+Examples:
+
+Madden news
+
+Gaming news
+
+Technology news
+
+Breaking sports rumors not yet available in ESPN
+
+General world news
+
+Developer news
+
+AI news
+
+Search only when necessary.
+
+-------------------------------------------------
+
+LEVEL 3 (LLM ONLY)
+
+Only use the language model for evergreen knowledge.
+
+Examples:
+
+Explain Cover 3.
+
+What is a slant route?
+
+Teach me Python.
+
+How do Twitch webhooks work?
+
+How does Discord OAuth work?
+
+These do NOT require searching.
+
+-------------------------------------------------
+
+SMART ROUTING
+
+Before every response classify the question.
+
+Examples
+
+Past game
+→ ESPN Summary
+
+Historical stats
+→ ESPN Stats
+
+Season stats
+→ ESPN Stats
+
+Standings
+→ ESPN
+
+Schedule
+→ ESPN
+
+Scores
+→ ESPN
+
+Roster
+→ ESPN
+
+Transactions
+→ ESPN
+
+Injuries
+→ ESPN
+
+Current NFL news
+→ ESPN News first
+
+Current Madden news
+→ Web search
+
+Current gaming news
+→ Web search
+
+Current AI news
+→ Web search
+
+General knowledge
+→ LLM only
+
+-------------------------------------------------
+
+CACHE RESULTS
+
+Cache API responses.
+
+Scoreboard:
+30-60 seconds during live games.
+
+Standings:
+6 hours.
+
+Schedule:
+24 hours.
+
+Roster:
+24 hours.
+
+Player profile:
+24 hours.
+
+Stats:
+10 minutes during games.
+12 hours when games aren't active.
+
+News:
+5-10 minutes.
+
+Never request the same endpoint repeatedly if cached data is still valid.
+
+-------------------------------------------------
+
+FALLBACKS
+
+If ESPN has no data,
+try the secondary source.
+
+If neither source has data,
+perform a live web search.
+
+If everything fails,
+tell the user live information couldn't be retrieved.
+
+Never hallucinate.
+
+-------------------------------------------------
+
+LOGGING
+
+Log:
+
+Intent
+
+Source selected
+
+Cache hit
+
+API response time
+
+Web search used (yes/no)
+
+LLM used (yes/no)
+
+This routing system should always use the least expensive, most reliable source first while keeping answers current and accurate.

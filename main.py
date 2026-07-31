@@ -2366,6 +2366,31 @@ async def _ai_tools_executor(fn_name: str, fn_args: dict) -> str:
             q, a = random.choice(_NFL_TRIVIA)
             return f"🏈 **NFL Trivia:** {q}\n||{a}||"
 
+        elif fn_name == "web_search":
+            query = fn_args.get("query", "").strip()
+            if not query:
+                return "No search query provided."
+            try:
+                from ddgs import DDGS
+                loop = asyncio.get_event_loop()
+                results = await loop.run_in_executor(
+                    None,
+                    lambda: DDGS().text(query, max_results=5),
+                )
+                if not results:
+                    return f"No web results found for '{query}'."
+                lines = []
+                for r in results[:5]:
+                    title = r.get("title", "")
+                    body  = r.get("body", "")[:250]
+                    href  = r.get("href", "")
+                    lines.append(f"**{title}**\n{body}\n{href}")
+                log.warning("[WEB SEARCH] query=%r  results=%d", query, len(results))
+                return "\n\n---\n".join(lines)
+            except Exception as exc:
+                log.error("web_search error: %s", exc)
+                return f"Web search failed: {exc}"
+
         else:
             return f"(Tool '{fn_name}' not implemented yet)"
 

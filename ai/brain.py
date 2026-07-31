@@ -176,9 +176,14 @@ class AIBrain:
             tools_arg   = TOOL_SCHEMAS
 
         # ── First OpenAI call ─────────────────────────────────────────────────
-        max_tok = 350 if settings.get("response_length", "short") == "short" else 600
+        _model   = "gpt-4o-mini"
+        _endpoint = "chat.completions.create"
+        max_tok  = 350 if settings.get("response_length", "short") == "short" else 600
+        tools_enabled = tools_arg is not None
+        tool_names = [t["function"]["name"] for t in (tools_arg or [])]
+
         call_kwargs: dict = dict(
-            model       = "gpt-4o-mini",
+            model       = _model,
             messages    = messages,
             tool_choice = tool_choice,
             max_tokens  = max_tok,
@@ -186,6 +191,16 @@ class AIBrain:
         )
         if tools_arg:
             call_kwargs["tools"] = tools_arg
+
+        # ── Full debug log (per spec) ─────────────────────────────────────────
+        log.warning(
+            "[AI REQUEST] model=%s | endpoint=%s | date_sent=%s | "
+            "tools_enabled=%s | tool_choice=%s | tools=%s | "
+            "intent=%s | source=%s | messages=%d",
+            _model, _endpoint, date_str,
+            tools_enabled, tool_choice, tool_names,
+            intent, source, len(messages),
+        )
 
         try:
             resp = await self.client.chat.completions.create(**call_kwargs)
@@ -274,11 +289,18 @@ class AIBrain:
         else:
             final_text = msg.content or ""
 
-        # ── Routing + date debug log ──────────────────────────────────────────
+        # ── Routing + response summary log ────────────────────────────────────
+        used_web_search = any(
+            (tc.function.name == "web_search" if hasattr(tc, "function") else False)
+            for tc in (msg.tool_calls or [])
+        ) if msg.tool_calls else False
         log.warning(
-            "[DEBUG] date_sent=%s | intent=%-15s | source=%-12s | "
-            "cache_hit=%-5s | api_ms=%6.0f | web_search=%s | llm=%s",
-            date_str, intent, source, cache_hit, api_ms, web_search, llm_used,
+            "[AI RESPONSE] model=%s | date_sent=%s | intent=%s | source=%s | "
+            "cache_hit=%s | espn_api_ms=%.0f | web_search_used=%s | llm_used=%s | "
+            "reply_len=%d",
+            _model, date_str, intent, source,
+            cache_hit, api_ms, used_web_search, llm_used,
+            len(final_text),
         )
 
         if final_text:

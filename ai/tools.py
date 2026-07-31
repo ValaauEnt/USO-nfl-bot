@@ -125,4 +125,28 @@ TOOL_SCHEMAS = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": (
+                "Search the web for CURRENT information not available in the model's training data. "
+                "Use this for: Madden news, gaming news, non-ESPN sports news, general current events, "
+                "release dates, recent trades or injuries not yet in ESPN, anything from the current year "
+                "that the model cannot answer confidently from memory alone. "
+                "ALWAYS prefer get_scoreboard / get_headlines / get_player_stats / get_trade_news for NFL — "
+                "use web_search only when those tools wouldn't cover it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Specific search query, e.g. 'Madden 26 release date 2026' or 'NFL training camp news July 2026'",
+                    }
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]

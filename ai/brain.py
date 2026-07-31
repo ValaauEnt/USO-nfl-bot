@@ -1,8 +1,14 @@
 """
-Uce AI Brain — orchestrates OpenAI calls, tool dispatch, and memory.
+Uce AI Brain — orchestrates OpenAI calls, tool dispatch, memory, and smart routing.
+
+Routing priority (per spec):
+  Level 1 — ESPN / sports APIs  (free, cached)     → espn_direct / espn_tool
+  Level 2 — Web search          (future)            → falls through to LLM for now
+  Level 3 — LLM only            (evergreen knowledge)
 """
 import os
 import json
+import time
 import logging
 from typing import Callable, Awaitable
 
@@ -17,8 +23,10 @@ from ai.memory import (
     remember_user,
 )
 from ai.tools import TOOL_SCHEMAS
+from ai import router as _router
+from ai import cache as _cache
 
-log = logging.getLogger("uso.brain")
+log = logging.getLogger("uce.brain")
 
 _CHECKIN_SYSTEM = (
     "You are Uce, the funny and engaging NFL Discord bot. "
@@ -51,7 +59,36 @@ class AIBrain:
     def available(self) -> bool:
         return self.client is not None
 
-    # ─── Main message processing ──────────────────────────────────────────────
+    # ─── Smart pre-fetch (Level 1 direct routes) ─────────────────────────────
+
+    async def _prefetch(self, route: dict) -> tuple[str | None, bool, float]:
+        """
+        Fetch ESPN data for a direct route, with caching.
+        Returns (data_text, cache_hit, api_ms).
+        """
+        cache_key = route["cache_key"]
+        ttl_key   = route["ttl_key"]
+        tool_name = route["tool_name"]
+        fn_args   = route["fn_args"]
+
+        # Cache check
+        cached, hit = _cache.get(cache_key)
+        if hit:
+            return cached, True, 0.0
+
+        # Fetch from API
+        t0 = time.monotonic()
+        try:
+            data = await self.tools_executor(tool_name, fn_args)
+        except Exception as exc:
+            log.error("Pre-fetch %s failed: %s", tool_name, exc)
+            return None, False, 0.0
+        api_ms = (time.monotonic() - t0) * 1000
+
+        _cache.set(cache_key, data, ttl_key)
+        return data, False, api_ms
+
+    # ─── Main message processing ─────────────────────────────────────────────
 
     async def process_message(
         self,
@@ -63,47 +100,88 @@ class AIBrain:
         settings: dict,
     ) -> str:
         if not self.available:
-            return (
-                "My brain needs an OPENAI_API_KEY to work — ask an admin to add it. 🤖"
-            )
+            return "My brain needs an OPENAI_API_KEY to work — ask an admin to add it. 🤖"
 
-        # Load memories
+        # ── Routing decision ──────────────────────────────────────────────────
+        route        = _router.classify(content)
+        intent       = route["intent"]
+        source       = route["source"]
+        prefetch_data: str | None = None
+        cache_hit    = False
+        api_ms       = 0.0
+        web_search   = False   # not yet implemented; reserved for Level 2
+        llm_used     = True    # always true when we reach OpenAI
+
+        # ── Level 1 direct: pre-fetch ESPN data ──────────────────────────────
+        if source == "espn_direct":
+            prefetch_data, cache_hit, api_ms = await self._prefetch(route)
+
+        # ── Memories ─────────────────────────────────────────────────────────
         user_mems   = recall_user(guild_id, user_id)   or {}
         server_mems = recall_server(guild_id)           or {}
 
-        # Build system prompt with personality + memories
+        # ── System prompt ─────────────────────────────────────────────────────
         system = build_system_prompt(settings, user_mems, server_mems)
         system += f"\n\nYou are talking to **{user_name}**."
         if user_mems.get("nickname"):
             system += f" Their nickname is **{user_mems['nickname']}**."
 
-        # Assemble message list
+        # Inject pre-fetched ESPN data so OpenAI formats it — no tool call needed
+        if prefetch_data:
+            system += (
+                f"\n\n[LIVE {intent.upper()} DATA — already fetched, do NOT call any tools]\n"
+                f"{prefetch_data}\n"
+                "[Use this data to answer the user naturally. Summarize it conversationally.]"
+            )
+
+        # For espn_tool routes, hint OpenAI to use the right tool immediately
+        if source == "espn_tool" and route["tool_name"]:
+            system += (
+                f"\n\n[ROUTING HINT] The user is asking about NFL {intent.replace('_', ' ')}. "
+                f"Call the `{route['tool_name']}` tool to get accurate data before answering. "
+                "Do not guess or make up stats, names, or scores."
+            )
+
+        # ── Message history ───────────────────────────────────────────────────
         history  = get_conversation_history(channel_id)
         messages = [{"role": "system", "content": system}]
         messages.extend(history)
         messages.append({"role": "user", "content": content})
 
-        # Log user message into history BEFORE the API call
         append_conversation(channel_id, "user", content)
+
+        # ── Determine tool_choice ─────────────────────────────────────────────
+        # espn_direct → data already injected, skip tool round-trip (saves 1 OpenAI call)
+        # llm_only    → no tools needed (saves tool overhead)
+        # everything else → auto (let OpenAI decide)
+        if source in ("espn_direct", "llm_only", "off_topic"):
+            tool_choice = "none"
+            tools_arg   = None
+        else:
+            tool_choice = "auto"
+            tools_arg   = TOOL_SCHEMAS
 
         # ── First OpenAI call ─────────────────────────────────────────────────
         max_tok = 350 if settings.get("response_length", "short") == "short" else 600
+        call_kwargs: dict = dict(
+            model       = "gpt-4o-mini",
+            messages    = messages,
+            tool_choice = tool_choice,
+            max_tokens  = max_tok,
+            temperature = 0.85,
+        )
+        if tools_arg:
+            call_kwargs["tools"] = tools_arg
+
         try:
-            resp = await self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=messages,
-                tools=TOOL_SCHEMAS,
-                tool_choice="auto",
-                max_tokens=max_tok,
-                temperature=0.85,
-            )
+            resp = await self.client.chat.completions.create(**call_kwargs)
         except Exception as exc:
             log.error("OpenAI first-pass error: %s", exc)
             return "Brain glitch — try again in a sec. 🧠💥"
 
         msg = resp.choices[0].message
 
-        # ── Tool calls ────────────────────────────────────────────────────────
+        # ── Tool calls (for auto routes) ──────────────────────────────────────
         if msg.tool_calls:
             tool_results = []
             for tc in msg.tool_calls:
@@ -115,33 +193,50 @@ class AIBrain:
 
                 log.info("Tool call: %s(%s)", fn_name, fn_args)
 
-                # Memory tool is handled locally
+                # Memory tool handled locally
                 if fn_name == "remember_user_fact":
-                    remember_user(guild_id, user_id, fn_args.get("key", "note"), fn_args.get("value", ""))
+                    remember_user(
+                        guild_id, user_id,
+                        fn_args.get("key", "note"),
+                        fn_args.get("value", ""),
+                    )
                     result_text = f"Got it — remembered '{fn_args.get('key')}' for {user_name}."
                 else:
-                    try:
-                        result_text = await self.tools_executor(fn_name, fn_args)
-                    except Exception as exc:
-                        log.error("Tool %s failed: %s", fn_name, exc)
-                        result_text = f"Tool error: {exc}"
+                    # Check cache for this tool+args combo
+                    ttl_key   = _router._TOOL_TTL_MAP.get(fn_name)
+                    ck        = f"{fn_name}:{json.dumps(fn_args, sort_keys=True)}"
+                    cached_r, chit = _cache.get(ck)
+                    if chit:
+                        result_text = cached_r
+                        log.info("Tool cache HIT  %s", ck)
+                    else:
+                        t0 = time.monotonic()
+                        try:
+                            result_text = await self.tools_executor(fn_name, fn_args)
+                        except Exception as exc:
+                            log.error("Tool %s failed: %s", fn_name, exc)
+                            result_text = f"Tool error: {exc}"
+                        tool_ms = (time.monotonic() - t0) * 1000
+                        if ttl_key and result_text and not result_text.startswith("Tool error"):
+                            _cache.set(ck, result_text, ttl_key)
+                        log.info("Tool %s  %.0fms", fn_name, tool_ms)
 
                 tool_results.append({
                     "tool_call_id": tc.id,
-                    "role": "tool",
-                    "content": result_text,
+                    "role":         "tool",
+                    "content":      result_text,
                 })
 
             # Reconstruct assistant turn with tool_calls field
             messages.append({
-                "role": "assistant",
-                "content": msg.content or "",
+                "role":       "assistant",
+                "content":    msg.content or "",
                 "tool_calls": [
                     {
-                        "id": tc.id,
+                        "id":   tc.id,
                         "type": "function",
                         "function": {
-                            "name": tc.function.name,
+                            "name":      tc.function.name,
                             "arguments": tc.function.arguments,
                         },
                     }
@@ -150,13 +245,13 @@ class AIBrain:
             })
             messages.extend(tool_results)
 
-            # ── Second pass with tool results ─────────────────────────────────
+            # ── Second pass: format tool results ─────────────────────────────
             try:
                 resp2 = await self.client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=messages,
-                    max_tokens=500,
-                    temperature=0.85,
+                    model       = "gpt-4o-mini",
+                    messages    = messages,
+                    max_tokens  = 500,
+                    temperature = 0.85,
                 )
                 final_text = resp2.choices[0].message.content or ""
             except Exception as exc:
@@ -164,6 +259,13 @@ class AIBrain:
                 final_text = "Something went sideways processing the data. 😬"
         else:
             final_text = msg.content or ""
+
+        # ── Routing log ───────────────────────────────────────────────────────
+        log.info(
+            "ROUTE intent=%-15s  source=%-12s  cache_hit=%s  api_ms=%6.0f  "
+            "web_search=%s  llm=%s",
+            intent, source, cache_hit, api_ms, web_search, llm_used,
+        )
 
         if final_text:
             append_conversation(channel_id, "assistant", final_text)
@@ -190,13 +292,13 @@ class AIBrain:
 
         try:
             resp = await self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
+                model       = "gpt-4o-mini",
+                messages    = [
                     {"role": "system", "content": _CHECKIN_SYSTEM},
                     {"role": "user",   "content": base},
                 ],
-                max_tokens=80,
-                temperature=1.1,
+                max_tokens  = 80,
+                temperature = 1.1,
             )
             return resp.choices[0].message.content or ""
         except Exception as exc:

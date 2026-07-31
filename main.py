@@ -688,7 +688,9 @@ async def get_player_gamelog(athlete_id: str) -> dict:
         return {}
 
 
-async def get_league_leaders(year: int = 2025, season_type: int = 2) -> dict:
+async def get_league_leaders(year: int | None = None, season_type: int = 2) -> dict:
+    if year is None:
+        year = datetime.now().year
     """Fetch NFL stat leaders from ESPN core API and resolve player names."""
     import asyncio
 
@@ -1355,7 +1357,7 @@ def build_market_watch_embed(sections: dict) -> discord.Embed:
 
 
 def build_leaders_embed(data: dict, mode: str) -> discord.Embed:
-    year = data.get("year", 2025)
+    year = data.get("year", datetime.now().year)
     if mode == "offense":
         title = f"🏈 NFL Offensive Leaders — {year}"
         cat_order = _LEADERS_OFFENSE

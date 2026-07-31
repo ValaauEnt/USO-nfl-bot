@@ -10,6 +10,7 @@ import os
 import json
 import time
 import logging
+from datetime import datetime, timezone
 from typing import Callable, Awaitable
 
 from openai import AsyncOpenAI
@@ -102,6 +103,11 @@ class AIBrain:
         if not self.available:
             return "My brain needs an OPENAI_API_KEY to work — ask an admin to add it. 🤖"
 
+        # ── Current date (injected dynamically — never rely on model's internal clock) ──
+        now      = datetime.now(timezone.utc)
+        date_str = now.strftime("%A, %B %d, %Y")
+        year_str = now.strftime("%Y")
+
         # ── Routing decision ──────────────────────────────────────────────────
         route        = _router.classify(content)
         intent       = route["intent"]
@@ -122,6 +128,14 @@ class AIBrain:
 
         # ── System prompt ─────────────────────────────────────────────────────
         system = build_system_prompt(settings, user_mems, server_mems)
+
+        # Date block — always first, so the model never guesses the year
+        system = (
+            f"Current date: {date_str}\n"
+            f"Current year: {year_str}\n"
+            f"Current NFL season year: {year_str}\n\n"
+        ) + system
+
         system += f"\n\nYou are talking to **{user_name}**."
         if user_mems.get("nickname"):
             system += f" Their nickname is **{user_mems['nickname']}**."
@@ -260,11 +274,11 @@ class AIBrain:
         else:
             final_text = msg.content or ""
 
-        # ── Routing log ───────────────────────────────────────────────────────
-        log.info(
-            "ROUTE intent=%-15s  source=%-12s  cache_hit=%s  api_ms=%6.0f  "
-            "web_search=%s  llm=%s",
-            intent, source, cache_hit, api_ms, web_search, llm_used,
+        # ── Routing + date debug log ──────────────────────────────────────────
+        log.warning(
+            "[DEBUG] date_sent=%s | intent=%-15s | source=%-12s | "
+            "cache_hit=%-5s | api_ms=%6.0f | web_search=%s | llm=%s",
+            date_str, intent, source, cache_hit, api_ms, web_search, llm_used,
         )
 
         if final_text:

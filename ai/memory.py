@@ -3,7 +3,8 @@ import json
 import time
 from ai.settings import _get_conn
 
-MAX_HISTORY = 20  # messages kept per channel
+MAX_HISTORY          = 20   # messages kept per channel
+HISTORY_MAX_AGE_SECS = 4 * 3600  # conversations older than 4 h are stale — start fresh
 
 
 # ── User memory ──────────────────────────────────────────────────────────────
@@ -84,10 +85,17 @@ def recall_server(guild_id: str, key: str | None = None):
 def get_conversation_history(channel_id: str) -> list[dict]:
     with _get_conn() as conn:
         row = conn.execute(
-            "SELECT messages FROM conversation_history WHERE channel_id=?",
+            "SELECT messages, updated_at FROM conversation_history WHERE channel_id=?",
             (channel_id,),
         ).fetchone()
-    return json.loads(row["messages"] or "[]") if row else []
+    if not row:
+        return []
+    # Drop history that's older than HISTORY_MAX_AGE_SECS — stale context
+    # causes the model to repeat outdated facts (wrong year, old scores, etc.)
+    age = time.time() - (row["updated_at"] or 0)
+    if age > HISTORY_MAX_AGE_SECS:
+        return []
+    return json.loads(row["messages"] or "[]")
 
 
 def append_conversation(channel_id: str, role: str, content: str):

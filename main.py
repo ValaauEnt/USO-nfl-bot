@@ -173,6 +173,7 @@ RUMOR_WORDS = ["rumor", "rumours", "report", "talks", "discussing", "expected", 
 
 intents = discord.Intents.default()
 intents.message_content = True   # enabled — Message Content Intent toggled on in Dev Portal
+intents.members = True            # enabled — Server Members Intent (required for on_member_join/remove)
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ── AI brain — initialised in on_ready once OPENAI_API_KEY is confirmed ───────

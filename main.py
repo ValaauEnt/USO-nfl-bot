@@ -4,6 +4,7 @@ import html
 import random
 import asyncio
 import logging
+import contextvars
 import xml.etree.ElementTree as ET
 import aiohttp
 from aiohttp import web as aiohttp_web
@@ -22,6 +23,14 @@ from ai.brain     import AIBrain
 from ai import conversation as _conv
 from ai import cooldowns    as _cd
 from ai.scheduler import run_checkins
+
+# ── Server manager feature ────────────────────────────────────────────────────
+from features.serverManager.db      import init_server_manager_db, get_server_manager_config, upsert_server_manager_config
+from features.serverManager.handler import handle_member_join, handle_member_remove
+
+# Context vars so the tools executor can access guild/author without changing AIBrain's interface
+_ctx_guild  = contextvars.ContextVar("sm_guild",  default=None)
+_ctx_author = contextvars.ContextVar("sm_author", default=None)
 
 logging.basicConfig(level=logging.WARNING)
 log = logging.getLogger("uso")
@@ -2366,6 +2375,104 @@ async def _ai_tools_executor(fn_name: str, fn_args: dict) -> str:
             q, a = random.choice(_NFL_TRIVIA)
             return f"🏈 **NFL Trivia:** {q}\n||{a}||"
 
+        # ── Server management tools ──────────────────────────────────────────
+        elif fn_name == "get_server_roles":
+            guild = _ctx_guild.get()
+            if guild is None:
+                return "Server information is not available right now."
+            roles = [r for r in guild.roles if not r.is_default()]
+            if not roles:
+                return "This server has no custom roles yet."
+            lines = [f"• **{r.name}** (ID: `{r.id}`)" for r in sorted(roles, key=lambda r: r.position, reverse=True)]
+            return "**Server roles:**\n" + "\n".join(lines)
+
+        elif fn_name == "read_server_config":
+            guild = _ctx_guild.get()
+            if guild is None:
+                return "Server information is not available right now."
+            guild_id = str(guild.id)
+            config = get_server_manager_config(guild_id)
+            lines = []
+            ar_ids = config.get("auto_roles", [])
+            if ar_ids:
+                role_names = []
+                for rid in ar_ids:
+                    r = guild.get_role(int(rid))
+                    role_names.append(r.name if r else f"Unknown ({rid})")
+                lines.append(f"**Auto-roles:** {', '.join(role_names)}")
+            else:
+                lines.append("**Auto-roles:** None configured")
+            w_status = "✅ Enabled" if config["welcome_enabled"] else "❌ Disabled"
+            lines.append(f"**Welcome messages:** {w_status}")
+            lines.append(f"**Welcome message:** {config['welcome_message']}")
+            g_status = "✅ Enabled" if config["goodbye_enabled"] else "❌ Disabled"
+            lines.append(f"**Goodbye messages:** {g_status}")
+            lines.append(f"**Goodbye message:** {config['goodbye_message']}")
+            settings = get_server_settings(guild_id)
+            ai_chans = settings.get("ai_channels", [])
+            if not ai_chans:
+                lines.append("\n⚠️ **No AI channel configured.** Welcome/goodbye messages require `/ai-channel` to be set up.")
+            return "\n".join(lines)
+
+        elif fn_name == "update_server_config":
+            guild  = _ctx_guild.get()
+            author = _ctx_author.get()
+            if guild is None or author is None:
+                return "Server information is not available right now."
+            perms = author.guild_permissions
+            if not (perms.administrator or perms.manage_guild):
+                return "❌ You need **Administrator** or **Manage Server** permission to change server settings."
+            guild_id = str(guild.id)
+            updates  = {}
+            if "auto_roles" in fn_args:
+                raw_ids   = fn_args["auto_roles"]
+                validated = []
+                invalid   = []
+                for rid in raw_ids:
+                    role = guild.get_role(int(rid)) if str(rid).isdigit() else None
+                    if role:
+                        validated.append(str(role.id))
+                    else:
+                        invalid.append(str(rid))
+                if invalid:
+                    return f"❌ Role IDs not found in this server: {', '.join(invalid)}. Use `get_server_roles` to list valid roles."
+                updates["auto_roles"] = validated
+            if "welcome_enabled" in fn_args:
+                if fn_args["welcome_enabled"]:
+                    settings = get_server_settings(guild_id)
+                    if not settings.get("ai_channels"):
+                        return "❌ Please set up an AI channel first with `/ai-channel` before enabling welcome messages."
+                updates["welcome_enabled"] = bool(fn_args["welcome_enabled"])
+            if "welcome_message" in fn_args:
+                updates["welcome_message"] = str(fn_args["welcome_message"])
+            if "goodbye_enabled" in fn_args:
+                if fn_args["goodbye_enabled"]:
+                    settings = get_server_settings(guild_id)
+                    if not settings.get("ai_channels"):
+                        return "❌ Please set up an AI channel first with `/ai-channel` before enabling goodbye messages."
+                updates["goodbye_enabled"] = bool(fn_args["goodbye_enabled"])
+            if "goodbye_message" in fn_args:
+                updates["goodbye_message"] = str(fn_args["goodbye_message"])
+            if not updates:
+                return "No changes were specified."
+            upsert_server_manager_config(guild_id, **updates)
+            parts = []
+            if "auto_roles" in updates:
+                if updates["auto_roles"]:
+                    names = [guild.get_role(int(r)).name for r in updates["auto_roles"] if guild.get_role(int(r))]
+                    parts.append(f"auto-roles set to: {', '.join(names)}")
+                else:
+                    parts.append("auto-roles cleared")
+            if "welcome_enabled" in updates:
+                parts.append(f"welcome messages {'enabled' if updates['welcome_enabled'] else 'disabled'}")
+            if "welcome_message" in updates:
+                parts.append("welcome message updated")
+            if "goodbye_enabled" in updates:
+                parts.append(f"goodbye messages {'enabled' if updates['goodbye_enabled'] else 'disabled'}")
+            if "goodbye_message" in updates:
+                parts.append("goodbye message updated")
+            return "✅ Done — " + "; ".join(parts) + "."
+
         elif fn_name == "web_search":
             query = fn_args.get("query", "").strip()
             if not query:
@@ -2480,6 +2587,10 @@ async def on_message(message: discord.Message):
     # and avoids an instant "jumped in" feel.
     await asyncio.sleep(1.5)
 
+    # Set context vars so tool executor can access guild/author
+    _ctx_guild.set(message.guild)
+    _ctx_author.set(message.author)
+
     async with message.channel.typing():
         reply = await ai_brain.process_message(
             content    = content,
@@ -2514,6 +2625,10 @@ async def ask(interaction: discord.Interaction, question: str):
     ch_id     = str(interaction.channel_id)
     settings  = get_server_settings(guild_id)
     user_name = interaction.user.display_name
+
+    # Set context vars so server-management tools can access guild/author
+    _ctx_guild.set(interaction.guild)
+    _ctx_author.set(interaction.user)
 
     reply = await ai_brain.process_message(
         content    = question,
@@ -2732,6 +2847,7 @@ async def on_ready():
     # Initialise SQLite tables
     try:
         init_db()
+        init_server_manager_db()
         print("Database initialised.")
     except Exception as e:
         print(f"Database init error: {e}")
@@ -2768,6 +2884,28 @@ async def on_ready():
         checkin_loop.start()
 
     print(f"BOT READY - Logged in as {bot.user}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Server Manager — member join / leave events
+# ══════════════════════════════════════════════════════════════════════════════
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """Auto-assign roles and post welcome messages when a member joins."""
+    try:
+        await handle_member_join(member)
+    except Exception as exc:
+        log.error("on_member_join error guild=%s: %s", member.guild.id, exc)
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    """Post goodbye messages when a member leaves."""
+    try:
+        await handle_member_remove(member)
+    except Exception as exc:
+        log.error("on_member_remove error guild=%s: %s", member.guild.id, exc)
 
 
 @bot.tree.error

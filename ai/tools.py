@@ -125,6 +125,79 @@ TOOL_SCHEMAS = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    # ── Server management tools ────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "get_server_roles",
+            "description": (
+                "List all roles in the current Discord server. "
+                "Use this before configuring auto-roles to find the correct role name and ID."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_server_config",
+            "description": (
+                "Read the current server manager configuration: auto-roles, welcome message, "
+                "and goodbye message settings. Use this to show the admin what is currently configured."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_server_config",
+            "description": (
+                "Apply a confirmed server manager configuration change. "
+                "ONLY call this tool AFTER the user has explicitly confirmed the proposed change. "
+                "Do NOT call this tool proactively — always summarize the change and ask for "
+                "confirmation first, then call this once the user says yes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "auto_roles": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "List of role IDs (as strings) to auto-assign to new members. "
+                            "Pass an empty list [] to clear all auto-roles. "
+                            "Omit this field to leave auto-roles unchanged."
+                        ),
+                    },
+                    "welcome_enabled": {
+                        "type": "boolean",
+                        "description": "Enable or disable welcome messages.",
+                    },
+                    "welcome_message": {
+                        "type": "string",
+                        "description": (
+                            "Custom welcome message. Supports {user}, {server}, {memberCount}. "
+                            "Omit to keep the current message."
+                        ),
+                    },
+                    "goodbye_enabled": {
+                        "type": "boolean",
+                        "description": "Enable or disable goodbye messages.",
+                    },
+                    "goodbye_message": {
+                        "type": "string",
+                        "description": (
+                            "Custom goodbye message. Supports {user}, {server}, {memberCount}. "
+                            "Omit to keep the current message."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    # ── Web search ─────────────────────────────────────────────────────────────
     {
         "type": "function",
         "function": {

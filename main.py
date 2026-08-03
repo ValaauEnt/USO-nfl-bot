@@ -2515,15 +2515,14 @@ async def ask(interaction: discord.Interaction, question: str):
     settings  = get_server_settings(guild_id)
     user_name = interaction.user.display_name
 
-    async with interaction.channel.typing():  # type: ignore[union-attr]
-        reply = await ai_brain.process_message(
-            content    = question,
-            guild_id   = guild_id,
-            user_id    = str(interaction.user.id),
-            user_name  = user_name,
-            channel_id = ch_id,
-            settings   = settings,
-        )
+    reply = await ai_brain.process_message(
+        content    = question,
+        guild_id   = guild_id,
+        user_id    = str(interaction.user.id),
+        user_name  = user_name,
+        channel_id = ch_id,
+        settings   = settings,
+    )
     if reply:
         chunks = [reply[i:i+2000] for i in range(0, len(reply), 2000)]
         await interaction.followup.send(chunks[0])

@@ -2427,6 +2427,8 @@ async def on_message(message: discord.Message):
     in_ai_ch  = ch_id_str in ai_chans
     conv_live = _conv.is_active(message.channel.id)
 
+    print(f"[DEBUG on_message] author={message.author} bot_mentioned={bot_mentioned} mode={mode} cd_ok={_cd.is_allowed(message.author.id, message.channel.id)}")
+
     # Decide whether to engage
     if mode == "silent":
         await bot.process_commands(message)
@@ -2445,11 +2447,13 @@ async def on_message(message: discord.Message):
         )
 
     if not should_respond:
+        print(f"[DEBUG on_message] not responding — should_respond=False")
         await bot.process_commands(message)
         return
 
     # Rate limit
     if not _cd.is_allowed(message.author.id, message.channel.id):
+        print(f"[DEBUG on_message] rate limited")
         await bot.process_commands(message)
         return
 

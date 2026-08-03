@@ -2486,26 +2486,37 @@ async def _ai_tools_executor(fn_name: str, fn_args: dict) -> str:
             query = fn_args.get("query", "").strip()
             if not query:
                 return "No search query provided."
-            try:
-                from ddgs import DDGS
-                loop = asyncio.get_event_loop()
-                results = await loop.run_in_executor(
-                    None,
-                    lambda: DDGS().text(query, max_results=5),
-                )
-                if not results:
-                    return f"No web results found for '{query}'."
-                lines = []
-                for r in results[:5]:
-                    title = r.get("title", "")
-                    body  = r.get("body", "")[:250]
-                    href  = r.get("href", "")
-                    lines.append(f"**{title}**\n{body}\n{href}")
-                log.warning("[WEB SEARCH] query=%r  results=%d", query, len(results))
-                return "\n\n---\n".join(lines)
-            except Exception as exc:
-                log.error("web_search error: %s", exc)
-                return f"Web search failed: {exc}"
+            from ddgs import DDGS
+            loop       = asyncio.get_event_loop()
+            last_exc   = None
+            _BACKOFFS  = [1.0, 3.0]   # seconds between retries
+            for attempt in range(3):
+                try:
+                    results = await loop.run_in_executor(
+                        None,
+                        lambda: DDGS().text(query, max_results=5),
+                    )
+                    if not results:
+                        return f"No web results found for '{query}'."
+                    lines = []
+                    for r in results[:5]:
+                        title = r.get("title", "")
+                        body  = r.get("body", "")[:250]
+                        href  = r.get("href", "")
+                        lines.append(f"**{title}**\n{body}\n{href}")
+                    log.info("[WEB SEARCH] query=%r  results=%d", query, len(results))
+                    return "\n\n---\n".join(lines)
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < len(_BACKOFFS):
+                        log.warning(
+                            "web_search attempt %d failed (%s), retrying in %.0fs…",
+                            attempt + 1, exc, _BACKOFFS[attempt],
+                        )
+                        await asyncio.sleep(_BACKOFFS[attempt])
+                    else:
+                        log.error("web_search all retries exhausted: %s", exc)
+            return "Web search is temporarily unavailable, please try again in a moment."
 
         else:
             return f"(Tool '{fn_name}' not implemented yet)"

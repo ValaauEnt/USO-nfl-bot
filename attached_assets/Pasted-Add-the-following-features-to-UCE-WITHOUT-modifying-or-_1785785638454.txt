@@ -1,0 +1,68 @@
+Add the following features to UCE WITHOUT modifying or breaking any existing working functionality.
+
+IMPORTANT:
+- This is an additive update only.
+- Do not rewrite existing AI, news, or scheduling systems.
+- Reuse existing architecture whenever possible.
+- Keep all current commands working exactly as they do now.
+
+====================================================
+FEATURE 1 - HEADLINES DESTINATION CHANNEL
+====================================================
+
+Expand the existing /headlines system.
+
+Administrators should be able to choose which channel receives automatic headline posts.
+
+Requirements:
+
+• Add a configuration option to the existing /headlines command or create a related setup command if necessary.
+• Allow administrators to select any text channel.
+• Save the selected channel per Discord server.
+• Persist the setting after bot restarts.
+• Verify the bot has permission to send messages in the selected channel.
+• If the configured channel is deleted, notify administrators and pause automatic headline posting until a new channel is selected.
+• Only users with Administrator or Manage Server permission can change the headline channel.
+• Add an option to view the currently configured headlines channel.
+• Add an option to disable automatic headline posting.
+
+====================================================
+FEATURE 2 - AI DATE & CURRENT EVENTS SAFETY
+====================================================
+
+UCE sometimes assumes today's date is October 2023. Prevent this.
+
+Requirements:
+
+Before answering any question involving:
+- Current events
+- News
+- Sports
+- Scores
+- Weather
+- Financial markets
+- Trending topics
+- Live information
+- Current date or time
+
+UCE must first determine the current date and verify whether live information is required.
+
+If live/current information is needed:
+
+• Use the existing web/news retrieval system instead of relying on the language model's internal knowledge.
+• Never answer current-event questions from outdated training knowledge.
+• Never assume today's date.
+• Use the actual current system date.
+• Clearly distinguish between historical information and current information.
+
+For evergreen topics that do not require live information, continue answering normally without unnecessary web lookups.
+
+====================================================
+GOAL
+====================================================
+
+Do not change any existing working features.
+
+Simply add:
+1. Configurable automatic headlines channel.
+2. Built-in AI date and live-information verification so UCE always uses current information when appropriate.

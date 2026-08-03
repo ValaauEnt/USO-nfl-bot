@@ -24,19 +24,28 @@ def init_db():
             conn.commit()
         except Exception:
             pass  # Column already exists
+        # Migrate: add headlines_channel_id column to existing DBs
+        try:
+            conn.execute(
+                "ALTER TABLE server_settings ADD COLUMN headlines_channel_id TEXT DEFAULT NULL"
+            )
+            conn.commit()
+        except Exception:
+            pass  # Column already exists
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS server_settings (
-                guild_id         TEXT PRIMARY KEY,
-                humor_level      TEXT DEFAULT 'funny',
-                roast_level      TEXT DEFAULT 'light',
-                meme_level       TEXT DEFAULT 'medium',
-                emoji_usage      TEXT DEFAULT 'balanced',
-                profanity        TEXT DEFAULT 'none',
-                interaction_mode TEXT DEFAULT 'mention_only',
-                response_length  TEXT DEFAULT 'short',
-                ai_channels      TEXT DEFAULT '[]',
-                morning_checkin  TEXT DEFAULT '{}',
-                night_checkin    TEXT DEFAULT '{}'
+                guild_id            TEXT PRIMARY KEY,
+                humor_level         TEXT DEFAULT 'funny',
+                roast_level         TEXT DEFAULT 'light',
+                meme_level          TEXT DEFAULT 'medium',
+                emoji_usage         TEXT DEFAULT 'balanced',
+                profanity           TEXT DEFAULT 'none',
+                interaction_mode    TEXT DEFAULT 'mention_only',
+                response_length     TEXT DEFAULT 'short',
+                ai_channels         TEXT DEFAULT '[]',
+                morning_checkin     TEXT DEFAULT '{}',
+                night_checkin       TEXT DEFAULT '{}',
+                headlines_channel_id TEXT DEFAULT NULL
             );
             CREATE TABLE IF NOT EXISTS user_memory (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,19 +91,21 @@ def get_server_settings(guild_id: str) -> dict:
             "ai_channels": [],
             "morning_checkin": {},
             "night_checkin": {},
+            "headlines_channel_id": None,
         }
     return {
-        "guild_id":         row["guild_id"],
-        "humor_level":      row["humor_level"],
-        "roast_level":      row["roast_level"],
-        "meme_level":       row["meme_level"],
-        "emoji_usage":      row["emoji_usage"],
-        "profanity":        row["profanity"],
-        "interaction_mode": row["interaction_mode"],
-        "response_length":  row["response_length"] or "short",
-        "ai_channels":      json.loads(row["ai_channels"] or "[]"),
-        "morning_checkin":  json.loads(row["morning_checkin"] or "{}"),
-        "night_checkin":    json.loads(row["night_checkin"] or "{}"),
+        "guild_id":              row["guild_id"],
+        "humor_level":           row["humor_level"],
+        "roast_level":           row["roast_level"],
+        "meme_level":            row["meme_level"],
+        "emoji_usage":           row["emoji_usage"],
+        "profanity":             row["profanity"],
+        "interaction_mode":      row["interaction_mode"],
+        "response_length":       row["response_length"] or "short",
+        "ai_channels":           json.loads(row["ai_channels"] or "[]"),
+        "morning_checkin":       json.loads(row["morning_checkin"] or "{}"),
+        "night_checkin":         json.loads(row["night_checkin"] or "{}"),
+        "headlines_channel_id":  row["headlines_channel_id"],
     }
 
 
@@ -108,19 +119,21 @@ def upsert_server_settings(guild_id: str, **kwargs):
             INSERT INTO server_settings
                 (guild_id, humor_level, roast_level, meme_level, emoji_usage,
                  profanity, interaction_mode, response_length,
-                 ai_channels, morning_checkin, night_checkin)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ai_channels, morning_checkin, night_checkin,
+                 headlines_channel_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id) DO UPDATE SET
-                humor_level      = excluded.humor_level,
-                roast_level      = excluded.roast_level,
-                meme_level       = excluded.meme_level,
-                emoji_usage      = excluded.emoji_usage,
-                profanity        = excluded.profanity,
-                interaction_mode = excluded.interaction_mode,
-                response_length  = excluded.response_length,
-                ai_channels      = excluded.ai_channels,
-                morning_checkin  = excluded.morning_checkin,
-                night_checkin    = excluded.night_checkin
+                humor_level          = excluded.humor_level,
+                roast_level          = excluded.roast_level,
+                meme_level           = excluded.meme_level,
+                emoji_usage          = excluded.emoji_usage,
+                profanity            = excluded.profanity,
+                interaction_mode     = excluded.interaction_mode,
+                response_length      = excluded.response_length,
+                ai_channels          = excluded.ai_channels,
+                morning_checkin      = excluded.morning_checkin,
+                night_checkin        = excluded.night_checkin,
+                headlines_channel_id = excluded.headlines_channel_id
         """, (
             guild_id,
             settings["humor_level"],
@@ -133,5 +146,6 @@ def upsert_server_settings(guild_id: str, **kwargs):
             json.dumps(settings["ai_channels"]),
             json.dumps(settings["morning_checkin"]),
             json.dumps(settings["night_checkin"]),
+            settings["headlines_channel_id"],
         ))
         conn.commit()

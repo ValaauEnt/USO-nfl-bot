@@ -107,6 +107,28 @@ TOOL_HINT_ROUTES: list[tuple[str, str, str, list[str]]] = [
     ),
 ]
 
+# ── Live-info override patterns ────────────────────────────────────────────────
+# Questions that are time-sensitive must have tool access even if they also
+# match an llm_only pattern. This check runs FIRST to prevent the router from
+# routing live-data questions to llm_only (which disables all tools).
+
+LIVE_INFO_OVERRIDE_PATTERNS: list[str] = [
+    # Explicit time anchors
+    r"\b(today|tonight|right now|at the moment|currently|this week|this month|this season|this year)\b",
+    # Recency signals
+    r"\b(latest|recent|breaking|just announced|just happened|just dropped|recently released|new release)\b",
+    # What's happening questions
+    r"\b(what'?s? (happening|going on)|what is happening|what are the (current|latest))\b",
+    # Date/time questions — model must use injected date, not training memory
+    r"\b(what (is|'s) (today'?s? date|the date|the time|the year|the current))\b",
+    r"\b(what (day|year|month|date) is (it|today))\b",
+    # Live sports
+    r"\b(current (standings?|rankings?|scores?|results?|record|stats?|injuries|roster))\b",
+    r"\b(who (got|was|is) (traded|cut|signed|released|injured|suspended) (recently|this (week|month|season|year)))\b",
+    # Trending / news
+    r"\b(trending|viral|news today|headlines? today|current events?)\b",
+]
+
 # ── LLM-only patterns ──────────────────────────────────────────────────────────
 # Evergreen conceptual knowledge — no API needed, no tool calls, cheaper.
 
@@ -157,6 +179,13 @@ def classify(message: str) -> dict:
       }
     """
     text = message.lower().strip()
+
+    # 0. Live-info override — time-sensitive questions get full tool access
+    #    even if they would otherwise match an llm_only pattern.
+    for pattern in LIVE_INFO_OVERRIDE_PATTERNS:
+        if re.search(pattern, text):
+            log.debug("Router → general (live_info_override)  pattern=%s", pattern[:40])
+            return _result("live_info", "general", None, {}, None, None)
 
     # 1. LLM-only (evergreen knowledge — skip tools entirely)
     for pattern in LLM_ONLY_PATTERNS:

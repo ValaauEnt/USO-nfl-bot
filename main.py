@@ -1883,17 +1883,15 @@ async def scores_loop():
 async def breaking_news_loop():
     """
     Every 2 minutes: fetch all articles from the last 24 hours.
-    - First run: post everything from the last 24 h as a backlog, mark all seen.
-    - Subsequent runs: post only brand-new articles (breaking news) immediately.
+    - First run: mark all current articles seen without posting (avoid backlog flood).
+    - Subsequent runs: post only brand-new articles to every configured guild channel.
+
+    Channel priority per guild:
+      1. headlines_channel_id stored in server_settings (set via /headlines-channel)
+      2. Global NEWS_CHANNEL_ID fallback (legacy /set-news-channel)
+      3. Hardcoded NFLWATCH_CHANNEL_ID fallback
     """
     global seen_article_ids, _news_initialized, NEWS_CHANNEL_ID
-
-    target_id = NEWS_CHANNEL_ID or NFLWATCH_CHANNEL_ID
-    if not target_id:
-        return
-    channel = bot.get_channel(target_id)
-    if channel is None:
-        return
 
     recent = await get_all_recent_news(hours=24)
     if not recent:
@@ -1901,22 +1899,72 @@ async def breaking_news_loop():
 
     if not _news_initialized:
         # First boot — mark all current articles as seen without posting them.
-        # Only articles that arrive AFTER this point will be posted as breaking news.
         for item in recent:
             seen_article_ids.add(item["article_id"])
         _news_initialized = True
         return
 
-    # Normal run — only post articles we haven't seen yet
     new_items = [i for i in recent if i["article_id"] not in seen_article_ids]
-    # Post oldest first so breaking alerts appear in chronological order
-    for item in reversed(new_items):
-        embed = _build_single_news_embed(item, breaking=True)
+    if not new_items:
+        return
+
+    # Build list of target channels — one per guild, respecting per-guild config
+    target_channels: list[discord.TextChannel] = []
+    guilds_covered: set[int] = set()
+
+    for guild in bot.guilds:
+        guild_id = str(guild.id)
         try:
-            await channel.send(embed=embed)
-            await asyncio.sleep(0.75)
+            cfg = get_server_settings(guild_id)
         except Exception:
-            pass
+            cfg = {}
+        ch_id = cfg.get("headlines_channel_id")
+
+        if ch_id:
+            channel = guild.get_channel(int(ch_id))
+            if channel is None:
+                # Channel was deleted — clear setting and notify server owner
+                try:
+                    upsert_server_settings(guild_id, headlines_channel_id=None)
+                    if guild.owner:
+                        await guild.owner.send(
+                            "⚠️ **Uce — Headlines channel removed**\n"
+                            "The headlines channel I was posting to no longer exists. "
+                            "Automatic headline posting has been paused.\n"
+                            "Use `/headlines-channel set` to choose a new channel."
+                        )
+                except Exception:
+                    pass
+                continue
+            target_channels.append(channel)
+            guilds_covered.add(guild.id)
+
+    # Global fallback for any guild not covered by per-guild config
+    fallback_id = NEWS_CHANNEL_ID or NFLWATCH_CHANNEL_ID
+    if fallback_id:
+        fallback_ch = bot.get_channel(fallback_id)
+        if (
+            fallback_ch is not None
+            and isinstance(fallback_ch, discord.TextChannel)
+            and fallback_ch.guild.id not in guilds_covered
+        ):
+            target_channels.append(fallback_ch)
+
+    if not target_channels:
+        return
+
+    # Post oldest-first to each channel so alerts appear in chronological order
+    for channel in target_channels:
+        for item in reversed(new_items):
+            embed = _build_single_news_embed(item, breaking=True)
+            try:
+                await channel.send(embed=embed)
+                await asyncio.sleep(0.75)
+            except Exception:
+                pass
+
+    # Mark all new items seen after posting to all channels
+    for item in new_items:
         seen_article_ids.add(item["article_id"])
 
 
@@ -2127,6 +2175,104 @@ async def headlines(interaction: discord.Interaction):
     await interaction.response.defer()
     items = await get_news_items()
     await interaction.followup.send(embed=build_news_embed(items))
+
+
+@bot.tree.command(
+    name="headlines-channel",
+    description="Configure which channel receives automatic NFL headline posts [Admin only]",
+)
+@app_commands.describe(
+    action="set — pick a channel | view — see current setting | disable — turn off auto-posts",
+    channel="Channel to receive automatic headlines (required when action is 'set')",
+)
+@app_commands.choices(action=[
+    app_commands.Choice(name="set",     value="set"),
+    app_commands.Choice(name="view",    value="view"),
+    app_commands.Choice(name="disable", value="disable"),
+])
+async def headlines_channel_cmd(
+    interaction: discord.Interaction,
+    action: str,
+    channel: discord.TextChannel | None = None,
+):
+    if not interaction.guild:
+        await interaction.response.send_message(
+            "This command only works inside a server.", ephemeral=True
+        )
+        return
+
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        await interaction.response.send_message(
+            "You need **Administrator** or **Manage Server** permission to change this setting.",
+            ephemeral=True,
+        )
+        return
+
+    guild_id = str(interaction.guild.id)
+
+    if action == "view":
+        cfg    = get_server_settings(guild_id)
+        ch_id  = cfg.get("headlines_channel_id")
+        if ch_id:
+            ch = interaction.guild.get_channel(int(ch_id))
+            if ch:
+                await interaction.response.send_message(
+                    f"📰 Automatic headlines are posting to {ch.mention}.", ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "⚠️ The configured headlines channel no longer exists. "
+                    "Use `/headlines-channel set` to pick a new one.",
+                    ephemeral=True,
+                )
+        else:
+            fallback_id = NEWS_CHANNEL_ID or NFLWATCH_CHANNEL_ID
+            fallback_ch = bot.get_channel(fallback_id) if fallback_id else None
+            if fallback_ch:
+                await interaction.response.send_message(
+                    f"📰 No per-server channel configured — using the default fallback {fallback_ch.mention}. "
+                    f"Use `/headlines-channel set` to choose a specific channel.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "📰 No headlines channel is configured. "
+                    "Use `/headlines-channel set #channel` to enable automatic posts.",
+                    ephemeral=True,
+                )
+        return
+
+    if action == "disable":
+        upsert_server_settings(guild_id, headlines_channel_id=None)
+        await interaction.response.send_message(
+            "📰 Automatic headline posting has been disabled for this server.",
+            ephemeral=True,
+        )
+        return
+
+    # action == "set"
+    if channel is None:
+        await interaction.response.send_message(
+            "Please specify a channel. Example: `/headlines-channel set #nfl-news`",
+            ephemeral=True,
+        )
+        return
+
+    bot_perms = channel.permissions_for(interaction.guild.me)
+    if not bot_perms.send_messages or not bot_perms.embed_links:
+        await interaction.response.send_message(
+            f"❌ I'm missing **Send Messages** or **Embed Links** permission in {channel.mention}. "
+            "Fix my channel permissions and try again.",
+            ephemeral=True,
+        )
+        return
+
+    upsert_server_settings(guild_id, headlines_channel_id=str(channel.id))
+    await interaction.response.send_message(
+        f"✅ NFL headlines will now be posted automatically to {channel.mention}.",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="tradetracker", description="Show categorized NFL trade headlines")

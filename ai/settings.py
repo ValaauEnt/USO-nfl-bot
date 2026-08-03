@@ -25,6 +25,18 @@ def init_db():
         except Exception:
             pass  # Column already exists
         conn.executescript("""
+            CREATE TABLE IF NOT EXISTS server_manager (
+                guild_id        TEXT PRIMARY KEY,
+                auto_roles      TEXT    DEFAULT '[]',
+                welcome_enabled INTEGER DEFAULT 0,
+                welcome_message TEXT    DEFAULT '',
+                goodbye_enabled INTEGER DEFAULT 0,
+                goodbye_message TEXT    DEFAULT '',
+                updated_at      REAL
+            );
+        """)
+        conn.commit()
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS server_settings (
                 guild_id         TEXT PRIMARY KEY,
                 humor_level      TEXT DEFAULT 'funny',

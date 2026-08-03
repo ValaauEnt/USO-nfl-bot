@@ -125,6 +125,73 @@ TOOL_SCHEMAS = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    # ── Phase 1: Server Management tools ─────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "get_server_roles",
+            "description": (
+                "List all roles in the current Discord server. "
+                "Call this FIRST when an admin asks about auto-roles so you can resolve "
+                "role names to IDs. Returns each role's id, name, and position."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_server_config",
+            "description": (
+                "Read the current server management configuration: "
+                "auto_roles, welcome_enabled, welcome_message, goodbye_enabled, goodbye_message. "
+                "Call this when an admin asks what the current settings are."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_server_config",
+            "description": (
+                "Update server management settings. "
+                "ONLY call this AFTER the admin has confirmed the change. "
+                "All fields are optional — only include what needs to change."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "auto_role_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of role IDs to auto-assign to new members. Replaces existing list.",
+                    },
+                    "clear_auto_roles": {
+                        "type": "boolean",
+                        "description": "Set true to remove all auto-role assignments.",
+                    },
+                    "welcome_enabled": {
+                        "type": "boolean",
+                        "description": "Enable or disable welcome messages.",
+                    },
+                    "welcome_message": {
+                        "type": "string",
+                        "description": "Welcome message template. Supports {user}, {server}, {memberCount}.",
+                    },
+                    "goodbye_enabled": {
+                        "type": "boolean",
+                        "description": "Enable or disable goodbye messages.",
+                    },
+                    "goodbye_message": {
+                        "type": "string",
+                        "description": "Goodbye message template. Supports {user}, {server}, {memberCount}.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {

@@ -1,0 +1,239 @@
+PHASE 1 - AI SERVER MANAGEMENT (SAFE IMPLEMENTATION)
+
+IMPORTANT
+
+This is an ADDITIVE update only.
+
+Do NOT rewrite, refactor, or replace any existing working systems.
+
+Do NOT modify existing AI behavior unless absolutely necessary.
+
+Do NOT remove or rename existing files.
+
+Do NOT change existing commands.
+
+Do NOT change working NFL features, Twitch features, AI chat, embeds, logging, permissions, server setup, or any other working functionality.
+
+Only ADD new modules that integrate with the current architecture.
+
+If an existing file must be modified, make the smallest possible change.
+
+Reuse existing UCE systems whenever possible instead of creating duplicate features or settings.
+
+====================================================
+EXISTING AI CHANNEL
+====================================================
+
+UCE already has an AI Channel configuration command.
+
+DO NOT create:
+
+• Home Channel
+• Welcome Channel
+• Goodbye Channel
+• Announcement Channel
+
+Reuse the existing configured AI Channel for all Phase 1 features.
+
+If Welcome or Goodbye messages are enabled, they must only be sent in the configured AI Channel.
+
+If no AI Channel has been configured, politely tell the administrator:
+
+"Please configure my AI Channel first before enabling welcome or goodbye messages."
+
+Do not create duplicate channel configuration settings.
+
+====================================================
+NEW MODULE
+====================================================
+
+Create:
+
+/features/serverManager/
+
+This module should contain all Phase 1 features.
+
+====================================================
+FEATURE 1
+AUTO ROLE
+====================================================
+
+Allow administrators to simply talk to UCE naturally.
+
+Examples:
+
+"UCE, make Member the default role."
+
+"UCE, automatically give new members the Rookie role."
+
+"UCE, stop auto assigning roles."
+
+"UCE, what role do new members receive?"
+
+Requirements:
+
+• Understand natural language.
+• Require Administrator or Manage Server permission.
+• Verify the role exists.
+• If duplicate role names exist, ask which one.
+• Store one or more Auto Roles per server.
+• Persist after restart.
+• Automatically assign configured roles using guildMemberAdd.
+• If UCE lacks Manage Roles permission or role hierarchy prevents assignment, explain exactly how to fix it.
+
+====================================================
+FEATURE 2
+WELCOME MESSAGES
+====================================================
+
+Examples:
+
+"UCE, enable welcome messages."
+
+"UCE, disable welcome messages."
+
+"UCE, change the welcome message."
+
+Messages should only be sent in the EXISTING configured AI Channel.
+
+Support variables:
+
+{user}
+{server}
+{memberCount}
+
+Store settings per server.
+
+====================================================
+FEATURE 3
+GOODBYE MESSAGES
+====================================================
+
+Examples:
+
+"UCE, enable goodbye messages."
+
+"UCE, disable goodbye messages."
+
+"UCE, change the goodbye message."
+
+Messages should only be sent in the EXISTING configured AI Channel.
+
+Support variables:
+
+{user}
+{server}
+{memberCount}
+
+Store settings per server.
+
+====================================================
+FEATURE 4
+SERVER SETTINGS DATABASE
+====================================================
+
+Create a dedicated server management section in the existing database.
+
+Store per guild:
+
+• Auto Roles
+• Welcome Enabled
+• Welcome Message
+• Goodbye Enabled
+• Goodbye Message
+
+DO NOT store another channel setting.
+
+Reuse the existing AI Channel setting.
+
+Everything must persist after restart.
+
+====================================================
+FEATURE 5
+PERMISSION CHECKS
+====================================================
+
+Only users with:
+
+• Administrator
+OR
+• Manage Server
+
+may configure these settings.
+
+If permission is missing, clearly explain why.
+
+====================================================
+FEATURE 6
+CONFIRMATION
+====================================================
+
+Before changing any server configuration, summarize the request.
+
+Example:
+
+"I'll automatically give every new member the Member role."
+
+Continue?
+
+Only apply changes after confirmation.
+
+====================================================
+FEATURE 7
+ERROR HANDLING
+====================================================
+
+If:
+
+• Role doesn't exist
+• Duplicate roles exist
+• Missing permissions
+• Role hierarchy blocks assignment
+• AI Channel hasn't been configured
+
+Explain exactly what the administrator needs to fix.
+
+====================================================
+FEATURE 8
+UCE MODERATION POLICY
+====================================================
+
+UCE is an AI Server Assistant.
+
+UCE is NOT a moderation bot.
+
+UCE must NEVER:
+
+• Ban members
+• Kick members
+• Timeout members
+• Mute members
+• Warn members
+• Softban members
+• Automatically punish users
+• Perform moderation actions on members
+
+If someone asks UCE to punish a member, respond with something similar to:
+
+"I'm designed to help manage your server, but moderation decisions such as banning, kicking, muting, warning, or timing out members are left to the server owner and moderators."
+
+====================================================
+GOAL
+====================================================
+
+This update must NOT affect existing functionality.
+
+All current UCE features must continue working exactly as they do now.
+
+Phase 1 should simply add:
+
+• AI-powered Auto Roles
+• Welcome Messages
+• Goodbye Messages
+• Server Settings Storage
+• Permission Checks
+• Configuration Confirmation
+
+while reusing existing UCE systems wherever possible.
+
+Preserve UCE's current architecture, commands, AI behavior, and database structure. Only extend the bot in a modular, maintainable way that can be expanded in future phases.

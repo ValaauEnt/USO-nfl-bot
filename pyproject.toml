@@ -7,4 +7,5 @@ dependencies = [
     "aiohttp>=3.13.3",
     "beautifulsoup4>=4.14.3",
     "discord-py>=2.7.1",
+    "ddgs>=9.3.0",
 ]

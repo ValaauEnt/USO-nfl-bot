@@ -35,6 +35,15 @@ _ctx_author = contextvars.ContextVar("sm_author", default=None)
 logging.basicConfig(level=logging.WARNING)
 log = logging.getLogger("uso")
 
+# ── Startup dependency check ───────────────────────────────────────────────────
+try:
+    import ddgs as _ddgs_check  # noqa: F401
+except ImportError:
+    log.warning(
+        "⚠️  'ddgs' package is not installed — the web_search AI tool will fail. "
+        "Run `uv sync` or add ddgs to pyproject.toml dependencies."
+    )
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 # Optional auto-post channels. Set to your Discord channel ID to enable.

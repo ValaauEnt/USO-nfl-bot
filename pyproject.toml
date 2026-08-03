@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.13.3",
     "beautifulsoup4>=4.14.3",
+    "ddgs>=9.0.0",
     "discord-py>=2.7.1",
     "ddgs>=9.3.0",
 ]

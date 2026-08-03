@@ -1034,6 +1034,7 @@ dependencies = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.3" },
     { name = "beautifulsoup4", specifier = ">=4.14.3" },
+    { name = "ddgs", specifier = ">=9.0.0" },
     { name = "ddgs", specifier = ">=9.3.0" },
     { name = "discord-py", specifier = ">=2.7.1" },
 ]

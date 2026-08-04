@@ -27,6 +27,15 @@ from ai.scheduler import run_checkins
 # ── Server manager feature ────────────────────────────────────────────────────
 from features.serverManager.db      import init_server_manager_db, get_server_manager_config, upsert_server_manager_config
 from features.serverManager.handler import handle_member_join, handle_member_remove
+from features.announcements import (
+    init_announcements_db,
+    add_scheduled_announcement,
+    get_scheduled_announcements,
+    get_all_enabled_announcements,
+    remove_scheduled_announcement,
+    update_last_sent,
+    TZ_MAP,
+)
 
 # Context vars so the tools executor can access guild/author without changing AIBrain's interface
 _ctx_guild  = contextvars.ContextVar("sm_guild",  default=None)
@@ -2015,6 +2024,65 @@ def news_loop():
 
 _EASTERN = ZoneInfo("America/New_York")
 
+
+@tasks.loop(minutes=1)
+async def announcements_loop():
+    """Fire any scheduled announcements that are due on the current minute."""
+    rows = get_all_enabled_announcements()
+    if not rows:
+        return
+
+    now_utc = datetime.now(timezone.utc)
+
+    for row in rows:
+        try:
+            tz = ZoneInfo(row["timezone"])
+            now_local = now_utc.astimezone(tz)
+            current_time_str = now_local.strftime("%H:%M")
+
+            if current_time_str != row["time_str"]:
+                continue
+
+            # Dedup: skip if already sent within this calendar day (daily) or
+            # within this week's occurrence (weekly).
+            last_sent_dt = datetime.fromtimestamp(row["last_sent"], tz=tz) if row["last_sent"] else None
+
+            if row["frequency"] == "daily":
+                if last_sent_dt and last_sent_dt.date() == now_local.date():
+                    continue  # already fired today
+            elif row["frequency"] == "weekly":
+                current_day = now_local.strftime("%A").lower()
+                if row["day_of_week"] and current_day != row["day_of_week"]:
+                    continue
+                if last_sent_dt and last_sent_dt.date() == now_local.date():
+                    continue  # already fired this week's occurrence
+            else:
+                continue  # unknown frequency — skip
+
+            guild = bot.get_guild(int(row["guild_id"]))
+            if guild is None:
+                continue
+            channel = guild.get_channel(int(row["channel_id"]))
+            if channel is None:
+                continue
+
+            bot_perms = channel.permissions_for(guild.me)
+            if not bot_perms.send_messages or not bot_perms.embed_links:
+                continue
+
+            embed = discord.Embed(
+                description=row["message"][:4096],
+                color=0x1E90FF,
+                timestamp=now_utc,
+            )
+            embed.set_footer(text="📢 Scheduled Announcement")
+            await channel.send(embed=embed)
+            update_last_sent(row["id"])
+
+        except Exception as exc:
+            log.warning("announcements_loop error for id=%s: %s", row.get("id"), exc)
+
+
 @tasks.loop(time=[
     dtime(8, 0, tzinfo=_EASTERN),
     dtime(17, 0, tzinfo=_EASTERN),
@@ -2272,6 +2340,239 @@ async def headlines_channel_cmd(
     upsert_server_settings(guild_id, headlines_channel_id=str(channel.id))
     await interaction.response.send_message(
         f"✅ NFL headlines will now be posted automatically to {channel.mention}.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="announce",
+    description="Post an announcement to a channel as a bot embed [Admin only]",
+)
+@app_commands.describe(
+    channel="Channel to post the announcement in",
+    message="The announcement text",
+    title="Optional embed title (defaults to '📢 Announcement')",
+)
+async def announce_cmd(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    message: str,
+    title: str = "📢 Announcement",
+):
+    if not interaction.guild:
+        await interaction.response.send_message(
+            "This command only works inside a server.", ephemeral=True
+        )
+        return
+
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        await interaction.response.send_message(
+            "You need **Administrator** or **Manage Server** permission to post announcements.",
+            ephemeral=True,
+        )
+        return
+
+    bot_perms = channel.permissions_for(interaction.guild.me)
+    if not bot_perms.send_messages or not bot_perms.embed_links:
+        await interaction.response.send_message(
+            f"❌ I'm missing **Send Messages** or **Embed Links** permission in {channel.mention}.",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title=title[:256],
+        description=message[:4096],
+        color=0x1E90FF,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text=f"Announced by {interaction.user.display_name}")
+
+    await channel.send(embed=embed)
+    await interaction.response.send_message(
+        f"✅ Announcement posted to {channel.mention}.", ephemeral=True
+    )
+
+
+@bot.tree.command(
+    name="announcement-schedule",
+    description="Manage scheduled announcements for this server [Admin only]",
+)
+@app_commands.describe(
+    action="add — create a schedule | list — view schedules | remove — delete a schedule",
+    channel="Channel to post in (required for add)",
+    message="Announcement text (required for add)",
+    frequency="How often to post (required for add)",
+    time="24-hour time to post, e.g. 14:30 (required for add)",
+    day="Day of week for weekly announcements, e.g. monday (required for weekly)",
+    timezone="Timezone for the schedule (default ET)",
+    id="Schedule ID to remove (required for remove)",
+)
+@app_commands.choices(
+    action=[
+        app_commands.Choice(name="add",    value="add"),
+        app_commands.Choice(name="list",   value="list"),
+        app_commands.Choice(name="remove", value="remove"),
+    ],
+    frequency=[
+        app_commands.Choice(name="daily",  value="daily"),
+        app_commands.Choice(name="weekly", value="weekly"),
+    ],
+    day=[
+        app_commands.Choice(name="Monday",    value="monday"),
+        app_commands.Choice(name="Tuesday",   value="tuesday"),
+        app_commands.Choice(name="Wednesday", value="wednesday"),
+        app_commands.Choice(name="Thursday",  value="thursday"),
+        app_commands.Choice(name="Friday",    value="friday"),
+        app_commands.Choice(name="Saturday",  value="saturday"),
+        app_commands.Choice(name="Sunday",    value="sunday"),
+    ],
+    timezone=[
+        app_commands.Choice(name="ET — Eastern",  value="ET"),
+        app_commands.Choice(name="CT — Central",  value="CT"),
+        app_commands.Choice(name="MT — Mountain", value="MT"),
+        app_commands.Choice(name="PT — Pacific",  value="PT"),
+        app_commands.Choice(name="UTC",           value="UTC"),
+    ],
+)
+async def announcement_schedule_cmd(
+    interaction: discord.Interaction,
+    action: str,
+    channel: discord.TextChannel | None = None,
+    message: str | None = None,
+    frequency: str | None = None,
+    time: str | None = None,
+    day: str | None = None,
+    timezone: str = "ET",
+    id: int | None = None,
+):
+    if not interaction.guild:
+        await interaction.response.send_message(
+            "This command only works inside a server.", ephemeral=True
+        )
+        return
+
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        await interaction.response.send_message(
+            "You need **Administrator** or **Manage Server** permission to manage schedules.",
+            ephemeral=True,
+        )
+        return
+
+    guild_id = str(interaction.guild.id)
+
+    # ── list ────────────────────────────────────────────────────────────────
+    if action == "list":
+        rows = get_scheduled_announcements(guild_id)
+        if not rows:
+            await interaction.response.send_message(
+                "📋 No scheduled announcements are set up for this server.\n"
+                "Use `/announcement-schedule add` to create one.",
+                ephemeral=True,
+            )
+            return
+
+        embed = discord.Embed(
+            title="📋 Scheduled Announcements",
+            color=0x1E90FF,
+        )
+        for row in rows:
+            ch = interaction.guild.get_channel(int(row["channel_id"]))
+            ch_str = ch.mention if ch else f"<deleted channel {row['channel_id']}>"
+            sched = (
+                f"{row['frequency'].capitalize()} at {row['time_str']} {row['timezone']}"
+                + (f" on {row['day_of_week'].capitalize()}" if row["day_of_week"] else "")
+            )
+            preview = row["message"][:80] + ("…" if len(row["message"]) > 80 else "")
+            embed.add_field(
+                name=f"ID {row['id']} — {sched}",
+                value=f"Channel: {ch_str}\nMessage: {preview}",
+                inline=False,
+            )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    # ── remove ───────────────────────────────────────────────────────────────
+    if action == "remove":
+        if id is None:
+            await interaction.response.send_message(
+                "Please provide the schedule **ID** to remove. "
+                "Use `/announcement-schedule list` to see IDs.",
+                ephemeral=True,
+            )
+            return
+        removed = remove_scheduled_announcement(guild_id, id)
+        if removed:
+            await interaction.response.send_message(
+                f"🗑️ Schedule **#{id}** has been removed.", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"❌ No schedule with ID **#{id}** found for this server.", ephemeral=True
+            )
+        return
+
+    # ── add ──────────────────────────────────────────────────────────────────
+    missing = []
+    if channel is None:  missing.append("`channel`")
+    if message is None:  missing.append("`message`")
+    if frequency is None: missing.append("`frequency`")
+    if time is None:     missing.append("`time`")
+    if frequency == "weekly" and day is None:
+        missing.append("`day` (required for weekly)")
+    if missing:
+        await interaction.response.send_message(
+            f"Missing required fields for **add**: {', '.join(missing)}.",
+            ephemeral=True,
+        )
+        return
+
+    # Validate HH:MM format
+    import re as _re
+    if not _re.match(r"^\d{1,2}:\d{2}$", time):
+        await interaction.response.send_message(
+            "❌ **time** must be in 24-hour format, e.g. `14:30` for 2:30 PM.",
+            ephemeral=True,
+        )
+        return
+    hh, mm = time.split(":")
+    if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
+        await interaction.response.send_message(
+            "❌ **time** is out of range. Use 00:00–23:59.",
+            ephemeral=True,
+        )
+        return
+    time_str = f"{int(hh):02d}:{mm}"  # normalise to zero-padded HH:MM
+
+    bot_perms = channel.permissions_for(interaction.guild.me)
+    if not bot_perms.send_messages or not bot_perms.embed_links:
+        await interaction.response.send_message(
+            f"❌ I'm missing **Send Messages** or **Embed Links** permission in {channel.mention}.",
+            ephemeral=True,
+        )
+        return
+
+    iana_tz = TZ_MAP.get(timezone, "America/New_York")
+    ann_id = add_scheduled_announcement(
+        guild_id=guild_id,
+        channel_id=str(channel.id),
+        message=message,
+        frequency=frequency,
+        time_str=time_str,
+        day_of_week=day,
+        tz=iana_tz,
+        created_by=str(interaction.user),
+    )
+
+    sched_str = (
+        f"Every **{day.capitalize()}** at **{time_str} {timezone}**"
+        if frequency == "weekly"
+        else f"Every day at **{time_str} {timezone}**"
+    )
+    await interaction.response.send_message(
+        f"✅ Schedule **#{ann_id}** created — {sched_str} in {channel.mention}.",
         ephemeral=True,
     )
 
@@ -3015,6 +3316,7 @@ async def on_ready():
     try:
         init_db()
         init_server_manager_db()
+        init_announcements_db()
         print("Database initialised.")
     except Exception as e:
         print(f"Database init error: {e}")
@@ -3049,6 +3351,9 @@ async def on_ready():
 
     if not checkin_loop.is_running():
         checkin_loop.start()
+
+    if not announcements_loop.is_running():
+        announcements_loop.start()
 
     from datetime import datetime, timezone as _tz
     _now = datetime.now(_tz.utc)

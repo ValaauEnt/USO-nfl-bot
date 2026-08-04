@@ -29,11 +29,17 @@ from ai import cache as _cache
 
 log = logging.getLogger("uce.brain")
 
-_CHECKIN_SYSTEM = (
-    "You are Uce, the funny and engaging NFL Discord bot. "
-    + CORE_TRAITS
-    + "\nKeep the message SHORT — one or two sentences max."
-)
+def _build_checkin_system() -> str:
+    """Build the checkin system prompt with the current date injected."""
+    now      = datetime.now(timezone.utc)
+    date_str = now.strftime("%A, %B %d, %Y")
+    year_str = now.strftime("%Y")
+    return (
+        f"TODAY IS {date_str} (year {year_str}). "
+        "You are Uce, the funny and engaging NFL Discord bot. "
+        + CORE_TRAITS
+        + "\nKeep the message SHORT — one or two sentences max."
+    )
 
 _MORNING_PROMPTS = [
     "Generate a unique, fun morning check-in for an NFL gaming Discord. "
@@ -129,11 +135,17 @@ class AIBrain:
         # ── System prompt ─────────────────────────────────────────────────────
         system = build_system_prompt(settings, user_mems, server_mems)
 
-        # Date block — always first, so the model never guesses the year
+        # Date block — prepended first so it is the highest-priority context.
+        # Phrased as an explicit instruction, not passive metadata, so the model
+        # actively trusts it over any conflicting claim in conversation history.
         system = (
-            f"Current date: {date_str}\n"
-            f"Current year: {year_str}\n"
-            f"Current NFL season year: {year_str}\n\n"
+            f"══ AUTHORITATIVE DATE — trust this above all else ══\n"
+            f"Today is {date_str}. The current year is {year_str}.\n"
+            f"Current NFL season: {year_str}.\n"
+            f"You MUST use this date. NEVER say 'as of my training data' or cite\n"
+            f"any year before {year_str} as current. If conversation history\n"
+            f"contains a different year, that entry is stale — ignore it.\n"
+            f"════════════════════════════════════════════════════\n\n"
         ) + system
 
         system += f"\n\nYou are talking to **{user_name}**."
@@ -192,14 +204,13 @@ class AIBrain:
         if tools_arg:
             call_kwargs["tools"] = tools_arg
 
-        # ── Full debug log (per spec) ─────────────────────────────────────────
-        log.warning(
-            "[AI REQUEST] model=%s | endpoint=%s | date_sent=%s | "
-            "tools_enabled=%s | tool_choice=%s | tools=%s | "
-            "intent=%s | source=%s | messages=%d",
-            _model, _endpoint, date_str,
-            tools_enabled, tool_choice, tool_names,
-            intent, source, len(messages),
+        # ── Full debug log ────────────────────────────────────────────────────
+        log.info(
+            "[AI REQUEST] date=%s year=%s | model=%s | route=%s/%s | "
+            "tool_choice=%s tools=%s | history=%d msgs=%d",
+            date_str, year_str, _model, source, intent,
+            tool_choice, tool_names,
+            len(history), len(messages),
         )
 
         try:
@@ -330,7 +341,7 @@ class AIBrain:
             resp = await self.client.chat.completions.create(
                 model       = "gpt-4o-mini",
                 messages    = [
-                    {"role": "system", "content": _CHECKIN_SYSTEM},
+                    {"role": "system", "content": _build_checkin_system()},
                     {"role": "user",   "content": base},
                 ],
                 max_tokens  = 80,

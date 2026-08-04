@@ -3050,6 +3050,12 @@ async def on_ready():
     if not checkin_loop.is_running():
         checkin_loop.start()
 
+    from datetime import datetime, timezone as _tz
+    _now = datetime.now(_tz.utc)
+    print(
+        f"Date context: {_now.strftime('%A, %B %d, %Y')} UTC  "
+        f"(year={_now.year}  epoch={int(_now.timestamp())})"
+    )
     print(f"BOT READY - Logged in as {bot.user}")
 
 

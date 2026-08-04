@@ -180,40 +180,43 @@ def classify(message: str) -> dict:
     """
     text = message.lower().strip()
 
-    # 0. Live-info override — time-sensitive questions get full tool access
-    #    even if they would otherwise match an llm_only pattern.
-    for pattern in LIVE_INFO_OVERRIDE_PATTERNS:
-        if re.search(pattern, text):
-            log.debug("Router → general (live_info_override)  pattern=%s", pattern[:40])
-            return _result("live_info", "general", None, {}, None, None)
-
-    # 1. LLM-only (evergreen knowledge — skip tools entirely)
-    for pattern in LLM_ONLY_PATTERNS:
-        if re.search(pattern, text):
-            log.debug("Router → llm_only  pattern=%s", pattern[:40])
-            return _result("llm_only", "llm_only", None, {}, None, None)
-
-    # 2. Direct ESPN routes (no entity extraction)
+    # 1. Direct ESPN routes first — pre-fetch is the most reliable path for
+    #    known sports data patterns; must run before llm_only and live_info
+    #    so "current score" still hits espn_direct, not a tool-optional path.
     for intent, tool, fn_args, ttl_key, patterns in DIRECT_ROUTES:
         for pattern in patterns:
             if re.search(pattern, text):
                 log.debug("Router → espn_direct  intent=%s", intent)
                 return _result(intent, "espn_direct", tool, fn_args, ttl_key, tool)
 
-    # 3. Tool-hint ESPN routes (entity extraction needed)
+    # 2. Tool-hint ESPN routes (entity extraction needed)
     for intent, tool, ttl_key, patterns in TOOL_HINT_ROUTES:
         for pattern in patterns:
             if re.search(pattern, text):
                 log.debug("Router → espn_tool  intent=%s  tool=%s", intent, tool)
                 return _result(intent, "espn_tool", tool, {}, ttl_key, None)
 
-    # 4. Off-topic limiter (log it; LLM handles with personality constraints)
+    # 3. Live-info override — runs AFTER ESPN routes but BEFORE llm_only.
+    #    Time-sensitive questions that aren't covered by ESPN direct/tool
+    #    routes get full tool access (web_search) instead of llm_only.
+    for pattern in LIVE_INFO_OVERRIDE_PATTERNS:
+        if re.search(pattern, text):
+            log.debug("Router → general (live_info_override)  pattern=%s", pattern[:40])
+            return _result("live_info", "general", None, {}, None, None)
+
+    # 4. LLM-only (evergreen knowledge — skip tools entirely)
+    for pattern in LLM_ONLY_PATTERNS:
+        if re.search(pattern, text):
+            log.debug("Router → llm_only  pattern=%s", pattern[:40])
+            return _result("llm_only", "llm_only", None, {}, None, None)
+
+    # 5. Off-topic limiter (log it; LLM handles with personality constraints)
     for pattern in OFF_TOPIC_PATTERNS:
         if re.search(pattern, text):
             log.debug("Router → off_topic  pattern=%s", pattern[:40])
             return _result("off_topic", "off_topic", None, {}, None, None)
 
-    # 5. General — let LLM decide with full tool access
+    # 6. General — let LLM decide with full tool access
     return _result("general", "general", None, {}, None, None)
 
 

@@ -2848,8 +2848,10 @@ async def _ai_tools_executor(fn_name: str, fn_args: dict) -> str:
             if guild is None:
                 return "Server information is not available right now."
             guild_id = str(guild.id)
-            config = get_server_manager_config(guild_id)
-            lines = []
+            config   = get_server_manager_config(guild_id)
+            settings = get_server_settings(guild_id)
+            lines    = []
+
             ar_ids = config.get("auto_roles", [])
             if ar_ids:
                 role_names = []
@@ -2859,16 +2861,39 @@ async def _ai_tools_executor(fn_name: str, fn_args: dict) -> str:
                 lines.append(f"**Auto-roles:** {', '.join(role_names)}")
             else:
                 lines.append("**Auto-roles:** None configured")
+
+            # Welcome
             w_status = "✅ Enabled" if config["welcome_enabled"] else "❌ Disabled"
+            w_ch_id  = config.get("welcome_channel_id")
+            if w_ch_id:
+                w_ch = guild.get_channel(int(w_ch_id))
+                w_ch_str = f"#{w_ch.name}" if w_ch else f"⚠️ Deleted channel (ID: {w_ch_id})"
+            else:
+                ai_chans  = settings.get("ai_channels", [])
+                w_ch_str  = f"#{guild.get_channel(int(ai_chans[0])).name} (AI channel fallback)" if ai_chans and guild.get_channel(int(ai_chans[0])) else "None — use /ai-channel to set one"
             lines.append(f"**Welcome messages:** {w_status}")
+            lines.append(f"**Welcome channel:** {w_ch_str}")
             lines.append(f"**Welcome message:** {config['welcome_message']}")
+
+            # Goodbye
             g_status = "✅ Enabled" if config["goodbye_enabled"] else "❌ Disabled"
+            g_ch_id  = config.get("goodbye_channel_id")
+            if g_ch_id:
+                g_ch = guild.get_channel(int(g_ch_id))
+                g_ch_str = f"#{g_ch.name}" if g_ch else f"⚠️ Deleted channel (ID: {g_ch_id})"
+            else:
+                ai_chans  = settings.get("ai_channels", [])
+                g_ch_str  = f"#{guild.get_channel(int(ai_chans[0])).name} (AI channel fallback)" if ai_chans and guild.get_channel(int(ai_chans[0])) else "None — use /ai-channel to set one"
             lines.append(f"**Goodbye messages:** {g_status}")
+            lines.append(f"**Goodbye channel:** {g_ch_str}")
             lines.append(f"**Goodbye message:** {config['goodbye_message']}")
-            settings = get_server_settings(guild_id)
+
             ai_chans = settings.get("ai_channels", [])
-            if not ai_chans:
-                lines.append("\n⚠️ **No AI channel configured.** Welcome/goodbye messages require `/ai-channel` to be set up.")
+            if not ai_chans and not config.get("welcome_channel_id") and not config.get("goodbye_channel_id"):
+                lines.append(
+                    "\n⚠️ **No channels configured.** Use `/ai-channel` to set up "
+                    "welcome/goodbye channels or add an AI channel as fallback."
+                )
             return "\n".join(lines)
 
         elif fn_name == "update_server_config":
@@ -2894,19 +2919,58 @@ async def _ai_tools_executor(fn_name: str, fn_args: dict) -> str:
                 if invalid:
                     return f"❌ Role IDs not found in this server: {', '.join(invalid)}. Use `get_server_roles` to list valid roles."
                 updates["auto_roles"] = validated
+            def _resolve_channel_by_ref(ref: str) -> tuple[str | None, str | None]:
+                """Return (channel_id, error_msg). ref can be name, mention, or ID."""
+                ref = ref.strip().lstrip("#").strip()
+                if ref.lower() == "none":
+                    return ("none", None)
+                # strip mention syntax <#123>
+                import re as _re
+                m = _re.match(r"<#(\d+)>", ref)
+                if m:
+                    ref = m.group(1)
+                # numeric ID
+                if ref.isdigit():
+                    ch = guild.get_channel(int(ref))
+                    if ch is None:
+                        return (None, f"No channel with ID {ref} found in this server.")
+                    return (str(ch.id), None)
+                # name lookup
+                ref_lower = ref.lower()
+                matches = [c for c in guild.text_channels if c.name.lower() == ref_lower]
+                if not matches:
+                    return (None, f"No text channel named '{ref}' found. Check the name and try again.")
+                ch = matches[0]
+                bot_member = guild.me
+                if not ch.permissions_for(bot_member).send_messages:
+                    return (None, f"I don't have Send Messages permission in #{ch.name}.")
+                return (str(ch.id), None)
+
+            if "welcome_channel" in fn_args:
+                ch_id, err = _resolve_channel_by_ref(fn_args["welcome_channel"])
+                if err:
+                    return f"❌ {err}"
+                updates["welcome_channel_id"] = None if ch_id == "none" else ch_id
             if "welcome_enabled" in fn_args:
                 if fn_args["welcome_enabled"]:
-                    settings = get_server_settings(guild_id)
-                    if not settings.get("ai_channels"):
-                        return "❌ Please set up an AI channel first with `/ai-channel` before enabling welcome messages."
+                    config_cur  = get_server_manager_config(guild_id)
+                    settings_cur = get_server_settings(guild_id)
+                    if not config_cur.get("welcome_channel_id") and not settings_cur.get("ai_channels"):
+                        return "❌ Please set a welcome channel first (e.g. 'set the welcome channel to #welcome') before enabling welcome messages."
                 updates["welcome_enabled"] = bool(fn_args["welcome_enabled"])
             if "welcome_message" in fn_args:
                 updates["welcome_message"] = str(fn_args["welcome_message"])
+            if "goodbye_channel" in fn_args:
+                ch_id, err = _resolve_channel_by_ref(fn_args["goodbye_channel"])
+                if err:
+                    return f"❌ {err}"
+                updates["goodbye_channel_id"] = None if ch_id == "none" else ch_id
             if "goodbye_enabled" in fn_args:
                 if fn_args["goodbye_enabled"]:
-                    settings = get_server_settings(guild_id)
-                    if not settings.get("ai_channels"):
-                        return "❌ Please set up an AI channel first with `/ai-channel` before enabling goodbye messages."
+                    config_cur  = get_server_manager_config(guild_id)
+                    settings_cur = get_server_settings(guild_id)
+                    if not config_cur.get("goodbye_channel_id") and not settings_cur.get("ai_channels"):
+                        return "❌ Please set a goodbye channel first before enabling goodbye messages."
                 updates["goodbye_enabled"] = bool(fn_args["goodbye_enabled"])
             if "goodbye_message" in fn_args:
                 updates["goodbye_message"] = str(fn_args["goodbye_message"])
@@ -2920,10 +2984,22 @@ async def _ai_tools_executor(fn_name: str, fn_args: dict) -> str:
                     parts.append(f"auto-roles set to: {', '.join(names)}")
                 else:
                     parts.append("auto-roles cleared")
+            if "welcome_channel_id" in updates:
+                if updates["welcome_channel_id"]:
+                    ch = guild.get_channel(int(updates["welcome_channel_id"]))
+                    parts.append(f"welcome channel set to #{ch.name if ch else updates['welcome_channel_id']}")
+                else:
+                    parts.append("welcome channel cleared (will use AI channel fallback)")
             if "welcome_enabled" in updates:
                 parts.append(f"welcome messages {'enabled' if updates['welcome_enabled'] else 'disabled'}")
             if "welcome_message" in updates:
                 parts.append("welcome message updated")
+            if "goodbye_channel_id" in updates:
+                if updates["goodbye_channel_id"]:
+                    ch = guild.get_channel(int(updates["goodbye_channel_id"]))
+                    parts.append(f"goodbye channel set to #{ch.name if ch else updates['goodbye_channel_id']}")
+                else:
+                    parts.append("goodbye channel cleared (will use AI channel fallback)")
             if "goodbye_enabled" in updates:
                 parts.append(f"goodbye messages {'enabled' if updates['goodbye_enabled'] else 'disabled'}")
             if "goodbye_message" in updates:
@@ -3187,36 +3263,208 @@ async def ai_settings(
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="ai-channel", description="Add or remove an AI channel where Uce replies freely")
+@bot.tree.command(
+    name="ai-channel",
+    description="Configure AI channels and welcome/goodbye settings [Admin only]",
+)
 @app_commands.describe(
-    action="Add or remove",
-    channel="The channel to configure",
+    action="What to configure",
+    channel="Channel to use (required for channel-setting actions)",
 )
 @app_commands.choices(action=[
-    app_commands.Choice(name="Add",    value="add"),
-    app_commands.Choice(name="Remove", value="remove"),
+    app_commands.Choice(name="Add AI channel",            value="add"),
+    app_commands.Choice(name="Remove AI channel",         value="remove"),
+    app_commands.Choice(name="Set welcome channel",       value="welcome-channel"),
+    app_commands.Choice(name="Set goodbye channel",       value="goodbye-channel"),
+    app_commands.Choice(name="Enable welcome messages",   value="welcome-on"),
+    app_commands.Choice(name="Disable welcome messages",  value="welcome-off"),
+    app_commands.Choice(name="Enable goodbye messages",   value="goodbye-on"),
+    app_commands.Choice(name="Disable goodbye messages",  value="goodbye-off"),
+    app_commands.Choice(name="Preview welcome message",   value="preview-welcome"),
+    app_commands.Choice(name="Preview goodbye message",   value="preview-goodbye"),
+    app_commands.Choice(name="View all channel settings", value="view"),
 ])
 async def ai_channel(
     interaction: discord.Interaction,
     action:  str,
-    channel: discord.TextChannel,
+    channel: discord.TextChannel | None = None,
 ):
     await interaction.response.defer(ephemeral=True)
-    guild_id = str(interaction.guild_id)
-    settings = get_server_settings(guild_id)
-    chans    = [str(c) for c in settings.get("ai_channels", [])]
-    cid      = str(channel.id)
 
-    if action == "add":
-        if cid not in chans:
-            chans.append(cid)
-        msg = f"✅ {channel.mention} added as an AI channel. Uce will reply to all messages there."
-    else:
-        chans = [c for c in chans if c != cid]
-        msg = f"✅ {channel.mention} removed from AI channels."
+    if not interaction.guild:
+        await interaction.followup.send(
+            "This command only works inside a server.", ephemeral=True
+        )
+        return
 
-    upsert_server_settings(guild_id, ai_channels=chans)
-    await interaction.followup.send(msg, ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        await interaction.followup.send(
+            "You need **Administrator** or **Manage Server** permission to use this command.",
+            ephemeral=True,
+        )
+        return
+
+    guild_id = str(interaction.guild.id)
+
+    # ── view ────────────────────────────────────────────────────────────────
+    if action == "view":
+        settings = get_server_settings(guild_id)
+        chans    = settings.get("ai_channels", [])
+        config   = get_server_manager_config(guild_id)
+
+        ai_ch_list = ", ".join(f"<#{c}>" for c in chans) if chans else "None"
+
+        def _ch_str(ch_id):
+            if not ch_id:
+                return "Not set (falls back to first AI channel)"
+            ch = interaction.guild.get_channel(int(ch_id))
+            return ch.mention if ch else f"⚠️ Deleted channel (ID: {ch_id})"
+
+        w_status = "✅ Enabled"  if config["welcome_enabled"] else "❌ Disabled"
+        g_status = "✅ Enabled"  if config["goodbye_enabled"] else "❌ Disabled"
+
+        embed = discord.Embed(title="📋 Channel & Greeting Settings", color=0x1E90FF)
+        embed.add_field(name="AI Channels", value=ai_ch_list, inline=False)
+        embed.add_field(
+            name="👋 Welcome",
+            value=(
+                f"Status: {w_status}\n"
+                f"Channel: {_ch_str(config['welcome_channel_id'])}\n"
+                f"Message: {config['welcome_message'][:80]}{'…' if len(config['welcome_message']) > 80 else ''}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="👋 Goodbye",
+            value=(
+                f"Status: {g_status}\n"
+                f"Channel: {_ch_str(config['goodbye_channel_id'])}\n"
+                f"Message: {config['goodbye_message'][:80]}{'…' if len(config['goodbye_message']) > 80 else ''}"
+            ),
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    # ── add / remove AI channel ──────────────────────────────────────────────
+    if action in ("add", "remove"):
+        if channel is None:
+            await interaction.followup.send(
+                "Please specify a **channel** for this action.", ephemeral=True
+            )
+            return
+        settings = get_server_settings(guild_id)
+        chans    = [str(c) for c in settings.get("ai_channels", [])]
+        cid      = str(channel.id)
+        if action == "add":
+            if cid not in chans:
+                chans.append(cid)
+            msg = f"✅ {channel.mention} added as an AI channel. Uce will reply to all messages there."
+        else:
+            chans = [c for c in chans if c != cid]
+            msg   = f"✅ {channel.mention} removed from AI channels."
+        upsert_server_settings(guild_id, ai_channels=chans)
+        await interaction.followup.send(msg, ephemeral=True)
+        return
+
+    # ── welcome-channel / goodbye-channel ────────────────────────────────────
+    if action in ("welcome-channel", "goodbye-channel"):
+        if channel is None:
+            await interaction.followup.send(
+                "Please specify a **channel** for this action.", ephemeral=True
+            )
+            return
+        bot_perms = channel.permissions_for(interaction.guild.me)
+        if not bot_perms.send_messages:
+            await interaction.followup.send(
+                f"❌ I don't have **Send Messages** permission in {channel.mention}. "
+                "Fix my channel permissions first.",
+                ephemeral=True,
+            )
+            return
+        label     = "welcome" if action == "welcome-channel" else "goodbye"
+        db_key    = f"{label}_channel_id"
+        upsert_server_manager_config(guild_id, **{db_key: str(channel.id)})
+        await interaction.followup.send(
+            f"✅ {label.capitalize()} messages will now be posted to {channel.mention}.",
+            ephemeral=True,
+        )
+        return
+
+    # ── enable / disable welcome ─────────────────────────────────────────────
+    if action in ("welcome-on", "welcome-off"):
+        enabled = action == "welcome-on"
+        if enabled:
+            config = get_server_manager_config(guild_id)
+            settings = get_server_settings(guild_id)
+            if not config.get("welcome_channel_id") and not settings.get("ai_channels"):
+                await interaction.followup.send(
+                    "⚠️ No welcome channel is set. Use **Set welcome channel** or "
+                    "add an AI channel first so messages have somewhere to go.",
+                    ephemeral=True,
+                )
+                return
+        upsert_server_manager_config(guild_id, welcome_enabled=enabled)
+        status = "✅ enabled" if enabled else "❌ disabled"
+        await interaction.followup.send(
+            f"Welcome messages are now **{status}**.", ephemeral=True
+        )
+        return
+
+    # ── enable / disable goodbye ─────────────────────────────────────────────
+    if action in ("goodbye-on", "goodbye-off"):
+        enabled = action == "goodbye-on"
+        if enabled:
+            config = get_server_manager_config(guild_id)
+            settings = get_server_settings(guild_id)
+            if not config.get("goodbye_channel_id") and not settings.get("ai_channels"):
+                await interaction.followup.send(
+                    "⚠️ No goodbye channel is set. Use **Set goodbye channel** or "
+                    "add an AI channel first so messages have somewhere to go.",
+                    ephemeral=True,
+                )
+                return
+        upsert_server_manager_config(guild_id, goodbye_enabled=enabled)
+        status = "✅ enabled" if enabled else "❌ disabled"
+        await interaction.followup.send(
+            f"Goodbye messages are now **{status}**.", ephemeral=True
+        )
+        return
+
+    # ── preview welcome ──────────────────────────────────────────────────────
+    if action == "preview-welcome":
+        config = get_server_manager_config(guild_id)
+        preview = (
+            config["welcome_message"]
+            .replace("{user}", interaction.user.mention)
+            .replace("{server}", interaction.guild.name)
+            .replace("{memberCount}", str(interaction.guild.member_count or "?"))
+        )
+        ch_id  = config.get("welcome_channel_id")
+        ch_str = f"<#{ch_id}>" if ch_id else "first AI channel (fallback)"
+        await interaction.followup.send(
+            f"**Welcome message preview** (posts to {ch_str}):\n\n{preview}",
+            ephemeral=True,
+        )
+        return
+
+    # ── preview goodbye ──────────────────────────────────────────────────────
+    if action == "preview-goodbye":
+        config = get_server_manager_config(guild_id)
+        preview = (
+            config["goodbye_message"]
+            .replace("{user}", interaction.user.display_name)
+            .replace("{server}", interaction.guild.name)
+            .replace("{memberCount}", str(interaction.guild.member_count or "?"))
+        )
+        ch_id  = config.get("goodbye_channel_id")
+        ch_str = f"<#{ch_id}>" if ch_id else "first AI channel (fallback)"
+        await interaction.followup.send(
+            f"**Goodbye message preview** (posts to {ch_str}):\n\n{preview}",
+            ephemeral=True,
+        )
+        return
 
 
 @bot.tree.command(name="morning-checkin", description="Configure Uce's daily morning check-in message")

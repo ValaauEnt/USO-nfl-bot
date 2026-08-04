@@ -142,8 +142,10 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "read_server_config",
             "description": (
-                "Read the current server manager configuration: auto-roles, welcome message, "
-                "and goodbye message settings. Use this to show the admin what is currently configured."
+                "Read the current server manager configuration: auto-roles, welcome/goodbye "
+                "channels, enabled states, and message templates. "
+                "Use this to show the admin what is currently configured, or to answer questions "
+                "like 'show my welcome channel' or 'what channel do goodbye messages go to'."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
@@ -156,7 +158,8 @@ TOOL_SCHEMAS = [
                 "Apply a confirmed server manager configuration change. "
                 "ONLY call this tool AFTER the user has explicitly confirmed the proposed change. "
                 "Do NOT call this tool proactively — always summarize the change and ask for "
-                "confirmation first, then call this once the user says yes."
+                "confirmation first, then call this once the user says yes. "
+                "Can set welcome/goodbye channels by channel name, mention, or ID."
             ),
             "parameters": {
                 "type": "object",
@@ -181,6 +184,14 @@ TOOL_SCHEMAS = [
                             "Omit to keep the current message."
                         ),
                     },
+                    "welcome_channel": {
+                        "type": "string",
+                        "description": (
+                            "Channel where welcome messages are posted. "
+                            "Pass the channel name (e.g. 'welcome'), a mention (e.g. '<#123>'), "
+                            "or a numeric channel ID string. Pass 'none' to clear."
+                        ),
+                    },
                     "goodbye_enabled": {
                         "type": "boolean",
                         "description": "Enable or disable goodbye messages.",
@@ -190,6 +201,13 @@ TOOL_SCHEMAS = [
                         "description": (
                             "Custom goodbye message. Supports {user}, {server}, {memberCount}. "
                             "Omit to keep the current message."
+                        ),
+                    },
+                    "goodbye_channel": {
+                        "type": "string",
+                        "description": (
+                            "Channel where goodbye messages are posted. "
+                            "Pass the channel name, mention, or numeric ID. Pass 'none' to clear."
                         ),
                     },
                 },

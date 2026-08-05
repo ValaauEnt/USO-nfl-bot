@@ -1,0 +1,125 @@
+Review the existing UCE bot codebase and determine why automatic member welcome and goodbye messages are not triggering. Do NOT rewrite or refactor working systems. Find the root cause (missing Discord intents, event listeners, permissions, caching, channel lookup, member intent configuration, etc.) and fix it while preserving the existing architecture.
+
+Requirements:
+
+1. Fix automatic member welcomes (on_member_join) and automatic goodbyes (on_member_remove) so they work reliably in every server.
+
+2. Chad AI must generate every welcome and goodbye message dynamically using OpenAI instead of static templates. Messages should naturally include:
+   - Member name
+   - Server name
+   - Current member count (if available)
+   - Friendly, welcoming tone that matches UCE's personality.
+
+3. Add the ability for server administrators to choose between:
+   - AI-generated welcome/goodbye messages (default).
+   - Fully custom welcome/goodbye messages written by the administrator.
+
+4. Add the following administrator slash commands:
+
+   /set-welcome-channel
+   - Selects the channel where welcome messages are sent.
+
+   /set-goodbye-channel
+   - Selects the channel where goodbye messages are sent.
+
+   /welcome
+   - Manually sends a welcome message for a selected member. If AI mode is enabled, Chad generates it. If Custom mode is enabled, it uses the custom template.
+
+   /goodbye
+   - Manually sends a goodbye message for a selected member. If AI mode is enabled, Chad generates it. If Custom mode is enabled, it uses the custom template.
+
+   /set-welcome-message
+   - Saves a custom welcome message for that server.
+
+   /set-goodbye-message
+   - Saves a custom goodbye message for that server.
+
+   /welcome-mode
+   - Allows administrators to choose:
+     • AI
+     • Custom
+
+   /goodbye-mode
+   - Allows administrators to choose:
+     • AI
+     • Custom
+
+5. Support placeholders inside custom messages:
+
+   {user}
+   {username}
+   {server}
+   {membercount}
+   {mention}
+
+Example:
+
+Welcome {mention} to **{server}**!
+You are member #{membercount}. We're glad you're here!
+
+6. Store all welcome/goodbye settings in the existing database per Discord server:
+
+   - Welcome channel
+   - Goodbye channel
+   - Welcome mode
+   - Goodbye mode
+   - Custom welcome message
+   - Custom goodbye message
+
+7. If OpenAI is unavailable, times out, or errors while AI mode is selected, automatically fall back to a professional built-in message so welcomes and goodbyes are never missed.
+
+8. If no welcome or goodbye channel has been configured, respond with a helpful administrator message instead of failing silently.
+
+9. Support unlimited Discord servers (multi-guild support).
+
+10. Add detailed console logging showing:
+
+   - Member joined
+   - Member left
+   - Welcome channel used
+   - Goodbye channel used
+   - AI generation success
+   - Custom message used
+   - Fallback message used
+   - Any errors
+
+11. Verify Discord Developer Portal settings, including Server Members Intent, and verify all required discord.py intents are enabled. Clearly explain if any external Discord configuration is still required.
+
+12. Add an AI configuration command:
+
+   /ai-channel
+
+   This command allows administrators to choose which channel Chad AI uses for:
+   - Welcome messages
+   - Goodbye messages
+   - Future AI-generated server announcements
+   - Future AI-generated server events
+
+13. Do NOT break any existing AI systems, moderation systems, NFL features, server management features, or existing slash commands. Integrate these features cleanly into the current architecture.
+
+14. Before considering the task complete:
+
+   - Run a complete self-test.
+   - Verify automatic welcome events.
+   - Verify automatic goodbye events.
+   - Verify /welcome.
+   - Verify /goodbye.
+   - Verify /set-welcome-channel.
+   - Verify /set-goodbye-channel.
+   - Verify /set-welcome-message.
+   - Verify /set-goodbye-message.
+   - Verify /welcome-mode.
+   - Verify /goodbye-mode.
+   - Verify /ai-channel.
+   - Verify AI mode works.
+   - Verify Custom mode works.
+   - Verify placeholder replacement works.
+   - Verify fallback messages work if OpenAI is unavailable.
+   - Report exactly what caused the original issue, what was fixed, and which tests passed.
+
+15. After ALL tests pass successfully:
+   - Commit every code change.
+   - Push all changes to the official GitHub repository on the main branch.
+   - Verify the GitHub push completed successfully.
+   - Report the commit hash and confirm the repository is fully up to date.
+   - Do NOT mark the task complete until the GitHub push has been verified successfully.

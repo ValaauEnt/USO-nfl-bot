@@ -5,8 +5,8 @@ from pathlib import Path
 
 DB_PATH = Path("data/uso_bot.db")
 
-_DEFAULT_WELCOME = "Welcome {user} to {server}! You are member #{memberCount}. 🎉"
-_DEFAULT_GOODBYE = "Goodbye {user}, we hope to see you again! 👋"
+_DEFAULT_WELCOME = "Welcome {mention} to **{server}**! You are member #{membercount}. We're glad you're here! 🎉"
+_DEFAULT_GOODBYE = "Goodbye **{user}**, we hope to see you again! 👋"
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -21,20 +21,24 @@ def init_server_manager_db():
     with _get_conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS server_manager (
-                guild_id          TEXT PRIMARY KEY,
-                auto_roles        TEXT    DEFAULT '[]',
-                welcome_enabled   INTEGER DEFAULT 0,
-                welcome_message   TEXT,
-                goodbye_enabled   INTEGER DEFAULT 0,
-                goodbye_message   TEXT,
-                welcome_channel_id TEXT   DEFAULT NULL,
-                goodbye_channel_id TEXT   DEFAULT NULL
+                guild_id           TEXT PRIMARY KEY,
+                auto_roles         TEXT    DEFAULT '[]',
+                welcome_enabled    INTEGER DEFAULT 0,
+                welcome_message    TEXT,
+                welcome_mode       TEXT    DEFAULT 'ai',
+                goodbye_enabled    INTEGER DEFAULT 0,
+                goodbye_message    TEXT,
+                goodbye_mode       TEXT    DEFAULT 'ai',
+                welcome_channel_id TEXT    DEFAULT NULL,
+                goodbye_channel_id TEXT    DEFAULT NULL
             );
         """)
-        # Migrations for existing tables that predate the channel columns
+        # Migrations for existing tables that predate these columns
         for col, definition in [
             ("welcome_channel_id", "TEXT DEFAULT NULL"),
             ("goodbye_channel_id", "TEXT DEFAULT NULL"),
+            ("welcome_mode",       "TEXT DEFAULT 'ai'"),
+            ("goodbye_mode",       "TEXT DEFAULT 'ai'"),
         ]:
             try:
                 conn.execute(
@@ -57,8 +61,10 @@ def get_server_manager_config(guild_id: str) -> dict:
             "auto_roles":         [],
             "welcome_enabled":    False,
             "welcome_message":    _DEFAULT_WELCOME,
+            "welcome_mode":       "ai",
             "goodbye_enabled":    False,
             "goodbye_message":    _DEFAULT_GOODBYE,
+            "goodbye_mode":       "ai",
             "welcome_channel_id": None,
             "goodbye_channel_id": None,
         }
@@ -67,8 +73,10 @@ def get_server_manager_config(guild_id: str) -> dict:
         "auto_roles":         json.loads(row["auto_roles"] or "[]"),
         "welcome_enabled":    bool(row["welcome_enabled"]),
         "welcome_message":    row["welcome_message"] or _DEFAULT_WELCOME,
+        "welcome_mode":       row["welcome_mode"] or "ai",
         "goodbye_enabled":    bool(row["goodbye_enabled"]),
         "goodbye_message":    row["goodbye_message"] or _DEFAULT_GOODBYE,
+        "goodbye_mode":       row["goodbye_mode"] or "ai",
         "welcome_channel_id": row["welcome_channel_id"],
         "goodbye_channel_id": row["goodbye_channel_id"],
     }
@@ -83,16 +91,18 @@ def upsert_server_manager_config(guild_id: str, **kwargs):
     with _get_conn() as conn:
         conn.execute("""
             INSERT INTO server_manager
-                (guild_id, auto_roles, welcome_enabled, welcome_message,
-                 goodbye_enabled, goodbye_message,
+                (guild_id, auto_roles, welcome_enabled, welcome_message, welcome_mode,
+                 goodbye_enabled, goodbye_message, goodbye_mode,
                  welcome_channel_id, goodbye_channel_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(guild_id) DO UPDATE SET
                 auto_roles         = excluded.auto_roles,
                 welcome_enabled    = excluded.welcome_enabled,
                 welcome_message    = excluded.welcome_message,
+                welcome_mode       = excluded.welcome_mode,
                 goodbye_enabled    = excluded.goodbye_enabled,
                 goodbye_message    = excluded.goodbye_message,
+                goodbye_mode       = excluded.goodbye_mode,
                 welcome_channel_id = excluded.welcome_channel_id,
                 goodbye_channel_id = excluded.goodbye_channel_id
         """, (
@@ -100,8 +110,10 @@ def upsert_server_manager_config(guild_id: str, **kwargs):
             json.dumps(config["auto_roles"]),
             int(config["welcome_enabled"]),
             config["welcome_message"],
+            config["welcome_mode"],
             int(config["goodbye_enabled"]),
             config["goodbye_message"],
+            config["goodbye_mode"],
             config["welcome_channel_id"],
             config["goodbye_channel_id"],
         ))

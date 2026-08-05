@@ -3470,6 +3470,156 @@ async def ai_channel(
         return
 
 
+@bot.tree.command(
+    name="set-welcome-channel",
+    description="Set the channel where welcome messages are posted [Admin only]",
+)
+@app_commands.describe(channel="Channel for welcome messages")
+async def set_welcome_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    await interaction.response.defer(ephemeral=True)
+    if not interaction.guild:
+        return await interaction.followup.send("This command only works inside a server.", ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send("You need **Administrator** or **Manage Server** permission.", ephemeral=True)
+    bot_perms = channel.permissions_for(interaction.guild.me)
+    if not bot_perms.send_messages:
+        return await interaction.followup.send(f"❌ I don't have **Send Messages** permission in {channel.mention}.", ephemeral=True)
+    upsert_server_manager_config(str(interaction.guild.id), welcome_channel_id=str(channel.id))
+    await interaction.followup.send(f"✅ Welcome messages will now be posted to {channel.mention}.", ephemeral=True)
+
+
+@bot.tree.command(
+    name="set-goodbye-channel",
+    description="Set the channel where goodbye messages are posted [Admin only]",
+)
+@app_commands.describe(channel="Channel for goodbye messages")
+async def set_goodbye_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    await interaction.response.defer(ephemeral=True)
+    if not interaction.guild:
+        return await interaction.followup.send("This command only works inside a server.", ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send("You need **Administrator** or **Manage Server** permission.", ephemeral=True)
+    bot_perms = channel.permissions_for(interaction.guild.me)
+    if not bot_perms.send_messages:
+        return await interaction.followup.send(f"❌ I don't have **Send Messages** permission in {channel.mention}.", ephemeral=True)
+    upsert_server_manager_config(str(interaction.guild.id), goodbye_channel_id=str(channel.id))
+    await interaction.followup.send(f"✅ Goodbye messages will now be posted to {channel.mention}.", ephemeral=True)
+
+
+@bot.tree.command(
+    name="set-welcome-message",
+    description="Save a custom welcome message template [Admin only]",
+)
+@app_commands.describe(message="Custom welcome message. Supports {mention} {user} {username} {server} {membercount}")
+async def set_welcome_message(interaction: discord.Interaction, message: str):
+    await interaction.response.defer(ephemeral=True)
+    if not interaction.guild:
+        return await interaction.followup.send("This command only works inside a server.", ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send("You need **Administrator** or **Manage Server** permission.", ephemeral=True)
+    upsert_server_manager_config(str(interaction.guild.id), welcome_message=message)
+    await interaction.followup.send(
+        f"✅ Custom welcome message saved.\n\n**Preview:**\n{message[:200]}",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="set-goodbye-message",
+    description="Save a custom goodbye message template [Admin only]",
+)
+@app_commands.describe(message="Custom goodbye message. Supports {user} {username} {server} {membercount}")
+async def set_goodbye_message(interaction: discord.Interaction, message: str):
+    await interaction.response.defer(ephemeral=True)
+    if not interaction.guild:
+        return await interaction.followup.send("This command only works inside a server.", ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send("You need **Administrator** or **Manage Server** permission.", ephemeral=True)
+    upsert_server_manager_config(str(interaction.guild.id), goodbye_message=message)
+    await interaction.followup.send(
+        f"✅ Custom goodbye message saved.\n\n**Preview:**\n{message[:200]}",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(
+    name="welcome-mode",
+    description="Choose how welcome messages are generated — AI or Custom [Admin only]",
+)
+@app_commands.describe(mode="AI uses OpenAI to write a unique message each time; Custom uses your saved template")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="AI — Uce writes a unique message each time", value="ai"),
+    app_commands.Choice(name="Custom — use my saved template",              value="custom"),
+])
+async def welcome_mode_cmd(interaction: discord.Interaction, mode: str):
+    await interaction.response.defer(ephemeral=True)
+    if not interaction.guild:
+        return await interaction.followup.send("This command only works inside a server.", ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send("You need **Administrator** or **Manage Server** permission.", ephemeral=True)
+    upsert_server_manager_config(str(interaction.guild.id), welcome_mode=mode)
+    label = "🤖 AI-generated" if mode == "ai" else "✏️ Custom template"
+    await interaction.followup.send(f"✅ Welcome messages will now use **{label}** mode.", ephemeral=True)
+
+
+@bot.tree.command(
+    name="goodbye-mode",
+    description="Choose how goodbye messages are generated — AI or Custom [Admin only]",
+)
+@app_commands.describe(mode="AI uses OpenAI to write a unique message each time; Custom uses your saved template")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="AI — Uce writes a unique message each time", value="ai"),
+    app_commands.Choice(name="Custom — use my saved template",              value="custom"),
+])
+async def goodbye_mode_cmd(interaction: discord.Interaction, mode: str):
+    await interaction.response.defer(ephemeral=True)
+    if not interaction.guild:
+        return await interaction.followup.send("This command only works inside a server.", ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send("You need **Administrator** or **Manage Server** permission.", ephemeral=True)
+    upsert_server_manager_config(str(interaction.guild.id), goodbye_mode=mode)
+    label = "🤖 AI-generated" if mode == "ai" else "✏️ Custom template"
+    await interaction.followup.send(f"✅ Goodbye messages will now use **{label}** mode.", ephemeral=True)
+
+
+@bot.tree.command(
+    name="welcome",
+    description="Manually send a welcome message for a member [Admin only]",
+)
+@app_commands.describe(member="The member to welcome")
+async def welcome_cmd(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.defer(ephemeral=True)
+    if not interaction.guild:
+        return await interaction.followup.send("This command only works inside a server.", ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send("You need **Administrator** or **Manage Server** permission.", ephemeral=True)
+    await handle_member_join(member, ai_brain=ai_brain)
+    await interaction.followup.send(f"✅ Welcome message sent for {member.mention}.", ephemeral=True)
+
+
+@bot.tree.command(
+    name="goodbye",
+    description="Manually send a goodbye message for a member [Admin only]",
+)
+@app_commands.describe(member="The member to say goodbye to")
+async def goodbye_cmd(interaction: discord.Interaction, member: discord.Member):
+    await interaction.response.defer(ephemeral=True)
+    if not interaction.guild:
+        return await interaction.followup.send("This command only works inside a server.", ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send("You need **Administrator** or **Manage Server** permission.", ephemeral=True)
+    await handle_member_remove(member, ai_brain=ai_brain)
+    await interaction.followup.send(f"✅ Goodbye message sent for **{member.display_name}**.", ephemeral=True)
+
+
 @bot.tree.command(name="morning-checkin", description="Configure Uce's daily morning check-in message")
 @app_commands.describe(
     enabled  = "Turn the morning check-in on or off",
@@ -3623,7 +3773,7 @@ async def on_ready():
 async def on_member_join(member: discord.Member):
     """Auto-assign roles and post welcome messages when a member joins."""
     try:
-        await handle_member_join(member)
+        await handle_member_join(member, ai_brain=ai_brain)
     except Exception as exc:
         log.error("on_member_join error guild=%s: %s", member.guild.id, exc)
 
@@ -3632,7 +3782,7 @@ async def on_member_join(member: discord.Member):
 async def on_member_remove(member: discord.Member):
     """Post goodbye messages when a member leaves."""
     try:
-        await handle_member_remove(member)
+        await handle_member_remove(member, ai_brain=ai_brain)
     except Exception as exc:
         log.error("on_member_remove error guild=%s: %s", member.guild.id, exc)
 

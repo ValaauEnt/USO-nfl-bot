@@ -3,6 +3,9 @@ import re
 import html
 import random
 import asyncio
+from dotenv import load_dotenv
+
+load_dotenv()
 import logging
 import contextvars
 import xml.etree.ElementTree as ET

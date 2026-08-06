@@ -1,0 +1,54 @@
+Perform a complete audit of the UCE AI personality system.
+
+Problem:
+The AI settings (Humor Level, Roast Level, Response Length, Interaction Mode, AI Channels, etc.) appear to save correctly, but they do not actually change the AI's behavior.
+
+For example:
+- Humor = Chaotic
+- Roast = Savage
+
+When a user says:
+"You a bitch"
+
+The AI responds with generic ChatGPT-style responses like:
+"Oof, I must've hit a nerve!"
+or
+"Touché! I'm just here for the vibes."
+
+This is NOT the intended behavior.
+
+Tasks:
+1. Trace the entire AI request pipeline from Discord message → AI request → AI response.
+2. Verify that every AI setting is actually injected into the system prompt before calling the LLM.
+3. Confirm the AI is reading the guild-specific settings every time it generates a response.
+4. Verify there are no default prompts overriding the custom personality.
+5. Search for duplicate system prompts or conflicting prompt builders.
+6. Verify Roast Level actually changes how aggressive the AI responds.
+7. Verify Humor Level actually changes the AI's personality.
+8. Verify Response Length changes output length.
+9. Verify Interaction Mode changes when the AI responds.
+10. Verify future settings also affect the prompt.
+
+Then redesign the personality system so it behaves naturally instead of feeling like a generic chatbot.
+
+Requirements:
+- The AI should sound like a real Discord member.
+- Humor should feel organic, not scripted.
+- Roast should be playful, witty, and configurable instead of using canned responses.
+- The personality should remain consistent across conversations.
+- Responses should avoid sounding like ChatGPT or an AI assistant unless explicitly configured.
+
+Also perform a complete audit of the newly added Welcome, Goodbye, AI Channel, and other channel configuration commands.
+
+Verify:
+- Every slash command correctly receives Channel parameters.
+- Every selected channel is saved.
+- Every configured feature reads the saved channel correctly.
+- No copy/paste bugs exist between Welcome, Goodbye, AI Channels, Logs, Suggestions, Verification, Tickets, or any newly added channel settings.
+
+Search the project for every place these systems are implemented and fix any similar issues before they become bugs.
+
+Finally, provide:
+- The root cause of each issue.
+- Every file modified.
+- A summary of every fix made.

@@ -3194,28 +3194,152 @@ async def ask(interaction: discord.Interaction, question: str):
         await interaction.followup.send("Hmm, I got nothing. Try again. 🤷")
 
 
-@bot.tree.command(name="ai-settings", description="Configure Uce's AI personality for this server")
+@bot.tree.command(
+    name="ai-personality",
+    description="Configure Uce's full personality for this server [Admin only]",
+)
+@app_commands.describe(
+    personality     = "Core character — who Uce is in this server",
+    humor           = "Humor level",
+    roast           = "Roast / trash-talk level",
+    confidence      = "How confident Uce sounds",
+    emoji           = "Emoji usage",
+    response_length = "How long responses are",
+    sports_knowledge= "Depth of sports knowledge shown",
+    profanity       = "Language filter",
+)
+@app_commands.choices(
+    personality=[
+        app_commands.Choice(name="🏈 Locker Room — one of the boys (default)", value="locker_room"),
+        app_commands.Choice(name="📋 Coach — motivational and strategic",        value="coach"),
+        app_commands.Choice(name="🔥 Trash Talker — witty and competitive",      value="trash_talker"),
+        app_commands.Choice(name="😂 Meme Lord — internet humor and chaos",      value="meme_lord"),
+        app_commands.Choice(name="⚖️ Commissioner — professional league manager", value="commissioner"),
+    ],
+    humor=[
+        app_commands.Choice(name="Serious — no jokes",          value="serious"),
+        app_commands.Choice(name="Balanced — light and friendly", value="balanced"),
+        app_commands.Choice(name="Funny — entertaining",         value="funny"),
+        app_commands.Choice(name="Chaotic — unhinged energy",    value="chaotic"),
+    ],
+    roast=[
+        app_commands.Choice(name="Off — no roasting",             value="off"),
+        app_commands.Choice(name="Light — friendly banter",       value="light"),
+        app_commands.Choice(name="Medium — real burns allowed",   value="medium"),
+        app_commands.Choice(name="Heavy — here for the smoke",    value="heavy"),
+        app_commands.Choice(name="Savage — absolute no mercy",    value="savage"),
+    ],
+    confidence=[
+        app_commands.Choice(name="Humble — open to being wrong",  value="humble"),
+        app_commands.Choice(name="Normal — stands behind takes",  value="normal"),
+        app_commands.Choice(name="Cocky — delivers takes as facts", value="cocky"),
+    ],
+    emoji=[
+        app_commands.Choice(name="None — text only",    value="none"),
+        app_commands.Choice(name="Minimal — 1 max",     value="minimal"),
+        app_commands.Choice(name="Balanced — natural",  value="balanced"),
+        app_commands.Choice(name="Heavy — let it flow", value="heavy"),
+    ],
+    response_length=[
+        app_commands.Choice(name="Very Short — one sentence",   value="very_short"),
+        app_commands.Choice(name="Short — 1-2 sentences",       value="short"),
+        app_commands.Choice(name="Medium — 2-4 sentences",      value="medium"),
+        app_commands.Choice(name="Detailed — full breakdown",   value="detailed"),
+    ],
+    sports_knowledge=[
+        app_commands.Choice(name="Casual Fan — accessible talk",     value="casual_fan"),
+        app_commands.Choice(name="Football Expert — deep knowledge", value="football_expert"),
+        app_commands.Choice(name="Multi-Sport — cross-sport refs",   value="multi_sport"),
+    ],
+    profanity=[
+        app_commands.Choice(name="Clean — no swearing",       value="clean"),
+        app_commands.Choice(name="Mild — PG-13 language",     value="mild"),
+        app_commands.Choice(name="Unrestricted — server default", value="server_default"),
+    ],
+)
+async def ai_personality_cmd(
+    interaction: discord.Interaction,
+    personality:      str | None = None,
+    humor:            str | None = None,
+    roast:            str | None = None,
+    confidence:       str | None = None,
+    emoji:            str | None = None,
+    response_length:  str | None = None,
+    sports_knowledge: str | None = None,
+    profanity:        str | None = None,
+):
+    await interaction.response.defer(ephemeral=True)
+    if not interaction.guild:
+        return await interaction.followup.send("This command only works inside a server.", ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send(
+            "You need **Administrator** or **Manage Server** permission to change AI settings.",
+            ephemeral=True,
+        )
+
+    guild_id = str(interaction.guild.id)
+    updates: dict = {}
+    if personality:      updates["personality"]      = personality
+    if humor:            updates["humor_level"]       = humor
+    if roast:            updates["roast_level"]       = roast
+    if confidence:       updates["confidence"]        = confidence
+    if emoji:            updates["emoji_usage"]       = emoji
+    if response_length:  updates["response_length"]   = response_length
+    if sports_knowledge: updates["sports_knowledge"]  = sports_knowledge
+    if profanity:        updates["profanity"]         = profanity
+
+    if updates:
+        upsert_server_settings(guild_id, **updates)
+
+    s = get_server_settings(guild_id)
+
+    _PERSONALITY_LABELS = {
+        "locker_room":  "🏈 Locker Room",
+        "coach":        "📋 Coach",
+        "trash_talker": "🔥 Trash Talker",
+        "meme_lord":    "😂 Meme Lord",
+        "commissioner": "⚖️ Commissioner",
+    }
+
+    embed = discord.Embed(title="🎭 Uce Personality Settings", color=0x7A5C2E)
+    embed.add_field(name="Core Personality",  value=_PERSONALITY_LABELS.get(s["personality"], s["personality"].replace("_"," ").title()), inline=False)
+    embed.add_field(name="Humor",             value=s["humor_level"].replace("_"," ").title(),    inline=True)
+    embed.add_field(name="Roast",             value=s["roast_level"].title(),                      inline=True)
+    embed.add_field(name="Confidence",        value=s["confidence"].title(),                       inline=True)
+    embed.add_field(name="Emoji",             value=s["emoji_usage"].title(),                      inline=True)
+    embed.add_field(name="Response Length",   value=s["response_length"].replace("_"," ").title(), inline=True)
+    embed.add_field(name="Sports Knowledge",  value=s["sports_knowledge"].replace("_"," ").title(), inline=True)
+    embed.add_field(name="Profanity",         value=s["profanity"].replace("_"," ").title(),       inline=True)
+    embed.add_field(name="Interaction Mode",  value=s["interaction_mode"].replace("_"," ").title(), inline=True)
+    embed.set_footer(text="Uce • Personality Settings — changes apply to the next message")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="ai-settings", description="Quick-configure Uce's AI settings [Admin only]")
 @app_commands.describe(
     humor="Humor level",
-    roast="Roast level",
+    roast="Roast / trash-talk level",
     emoji="Emoji usage",
     mode="How Uce participates in chat",
     response_length="How long Uce's answers are",
 )
 @app_commands.choices(
     humor=[
-        app_commands.Choice(name="Professional", value="professional"),
-        app_commands.Choice(name="Casual",       value="casual"),
-        app_commands.Choice(name="Funny",        value="funny"),
-        app_commands.Choice(name="Chaotic",      value="chaotic"),
+        app_commands.Choice(name="Serious — no jokes",           value="serious"),
+        app_commands.Choice(name="Balanced — light and friendly", value="balanced"),
+        app_commands.Choice(name="Funny — entertaining",          value="funny"),
+        app_commands.Choice(name="Chaotic — unhinged energy",     value="chaotic"),
     ],
     roast=[
         app_commands.Choice(name="Off",    value="off"),
         app_commands.Choice(name="Light",  value="light"),
         app_commands.Choice(name="Medium", value="medium"),
+        app_commands.Choice(name="Heavy",  value="heavy"),
         app_commands.Choice(name="Savage", value="savage"),
     ],
     emoji=[
+        app_commands.Choice(name="None",     value="none"),
         app_commands.Choice(name="Minimal",  value="minimal"),
         app_commands.Choice(name="Balanced", value="balanced"),
         app_commands.Choice(name="Heavy",    value="heavy"),
@@ -3228,8 +3352,10 @@ async def ask(interaction: discord.Interaction, question: str):
         app_commands.Choice(name="Community Mode",     value="community"),
     ],
     response_length=[
-        app_commands.Choice(name="Short (1-2 sentences)", value="short"),
-        app_commands.Choice(name="Long (detailed)",        value="long"),
+        app_commands.Choice(name="Very Short",  value="very_short"),
+        app_commands.Choice(name="Short",       value="short"),
+        app_commands.Choice(name="Medium",      value="medium"),
+        app_commands.Choice(name="Detailed",    value="detailed"),
     ],
 )
 async def ai_settings(
@@ -3241,8 +3367,17 @@ async def ai_settings(
     response_length: str | None = None,
 ):
     await interaction.response.defer(ephemeral=True)
-    guild_id = str(interaction.guild_id)
-    updates  = {}
+    if not interaction.guild:
+        return await interaction.followup.send("This command only works inside a server.", ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send(
+            "You need **Administrator** or **Manage Server** permission to change AI settings.",
+            ephemeral=True,
+        )
+
+    guild_id = str(interaction.guild.id)
+    updates: dict = {}
     if humor:           updates["humor_level"]      = humor
     if roast:           updates["roast_level"]      = roast
     if emoji:           updates["emoji_usage"]      = emoji
@@ -3254,15 +3389,15 @@ async def ai_settings(
 
     s = get_server_settings(guild_id)
     embed = discord.Embed(title="🤖 Uce AI Settings", color=0x7A5C2E)
-    embed.add_field(name="Humor Level",      value=s["humor_level"].title(),      inline=True)
-    embed.add_field(name="Roast Level",      value=s["roast_level"].title(),      inline=True)
-    embed.add_field(name="Emoji Usage",      value=s["emoji_usage"].title(),      inline=True)
+    embed.add_field(name="Humor Level",      value=s["humor_level"].replace("_"," ").title(),      inline=True)
+    embed.add_field(name="Roast Level",      value=s["roast_level"].title(),                        inline=True)
+    embed.add_field(name="Emoji Usage",      value=s["emoji_usage"].title(),                        inline=True)
     embed.add_field(name="Interaction Mode", value=s["interaction_mode"].replace("_"," ").title(), inline=True)
-    embed.add_field(name="Response Length",  value=s["response_length"].title(),  inline=True)
+    embed.add_field(name="Response Length",  value=s["response_length"].replace("_"," ").title(),  inline=True)
     ai_chs = s.get("ai_channels", [])
     ch_mentions = " ".join(f"<#{c}>" for c in ai_chs) if ai_chs else "None"
     embed.add_field(name="AI Channels", value=ch_mentions, inline=False)
-    embed.set_footer(text="Uce • AI Settings")
+    embed.set_footer(text="Uce • AI Settings — use /ai-personality for full control")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 

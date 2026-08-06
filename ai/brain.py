@@ -190,7 +190,14 @@ class AIBrain:
         # ── First OpenAI call ─────────────────────────────────────────────────
         _model   = "gpt-4o-mini"
         _endpoint = "chat.completions.create"
-        max_tok  = 350 if settings.get("response_length", "short") == "short" else 600
+        _LENGTH_TOKENS = {
+            "very_short": 150,
+            "short":      300,
+            "medium":     450,
+            "detailed":   700,
+            "long":       700,   # legacy alias → detailed
+        }
+        max_tok = _LENGTH_TOKENS.get(settings.get("response_length", "short"), 300)
         tools_enabled = tools_arg is not None
         tool_names = [t["function"]["name"] for t in (tools_arg or [])]
 

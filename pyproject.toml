@@ -9,5 +9,13 @@ dependencies = [
     "ddgs>=9.3.0",
     "discord-py>=2.7.1",
     "openai>=1.0.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "python-dotenv>=1.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
 ]

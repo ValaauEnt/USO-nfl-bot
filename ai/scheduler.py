@@ -64,7 +64,7 @@ async def run_checkins(bot, brain, get_settings_fn, recall_server_fn) -> None:
 
             mood = "morning" if checkin_type == "morning_checkin" else "night"
             try:
-                message = await brain.generate_checkin(mood, server_mems)
+                message = await brain.generate_checkin(mood, server_mems, settings)
                 if message:
                     await channel.send(message)
             except Exception as exc:

@@ -29,17 +29,32 @@ from ai import cache as _cache
 
 log = logging.getLogger("uce.brain")
 
-def _build_checkin_system() -> str:
-    """Build the checkin system prompt with the current date injected."""
+def _build_checkin_system(settings: dict | None = None) -> str:
+    """Build the checkin system prompt using the guild's configured personality."""
     now      = datetime.now(timezone.utc)
     date_str = now.strftime("%A, %B %d, %Y")
     year_str = now.strftime("%Y")
-    return (
-        f"TODAY IS {date_str} (year {year_str}). "
-        "You are Uce, the funny and engaging NFL Discord bot. "
-        + CORE_TRAITS
-        + "\nKeep the message SHORT — one or two sentences max."
+
+    date_block = (
+        f"══ AUTHORITATIVE DATE — trust this above all else ══\n"
+        f"Today is {date_str}. The current year is {year_str}.\n"
+        f"Current NFL season: {year_str}.\n"
+        f"════════════════════════════════════════════════════\n\n"
     )
+
+    if settings:
+        # Use the guild's full personality system, then pin the length
+        base = build_system_prompt(settings)
+        return date_block + base + "\n\nKeep the message SHORT — one or two sentences max."
+    else:
+        # Fallback: generic prompt (no guild settings available)
+        return (
+            date_block
+            + f"TODAY IS {date_str} (year {year_str}). "
+            "You are Uce, the funny and engaging NFL Discord bot. "
+            + CORE_TRAITS
+            + "\nKeep the message SHORT — one or two sentences max."
+        )
 
 _MORNING_PROMPTS = [
     "Generate a unique, fun morning check-in for an NFL gaming Discord. "
@@ -332,8 +347,14 @@ class AIBrain:
         self,
         checkin_type: str,
         server_memories: dict | None = None,
+        settings: dict | None = None,
     ) -> str:
-        """Generate a unique morning or night check-in message."""
+        """Generate a unique morning or night check-in message.
+
+        Uses the guild's configured personality (settings) so the tone matches
+        what admins set — a Trash Talker server gets a trash-talking check-in,
+        a Commissioner server gets a professional one.
+        """
         if not self.available:
             if checkin_type == "morning":
                 return "Good morning! What's everyone up to today? 🏈"
@@ -344,11 +365,20 @@ class AIBrain:
             context = "\n".join(f"• {k}: {v}" for k, v in server_memories.items())
             base += f"\n\nServer context:\n{context}"
 
+        system_prompt = _build_checkin_system(settings)
+        log.info(
+            "Generating %s check-in | personality=%s humor=%s roast=%s",
+            checkin_type,
+            (settings or {}).get("personality", "default"),
+            (settings or {}).get("humor_level", "default"),
+            (settings or {}).get("roast_level", "default"),
+        )
+
         try:
             resp = await self.client.chat.completions.create(
                 model       = "gpt-4o-mini",
                 messages    = [
-                    {"role": "system", "content": _build_checkin_system()},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": base},
                 ],
                 max_tokens  = 80,

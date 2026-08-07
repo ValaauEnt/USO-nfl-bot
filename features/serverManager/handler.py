@@ -17,8 +17,8 @@ _FALLBACK_WELCOME = (
     "You are member #{membercount}. Great to have you here! 🏈"
 )
 _FALLBACK_GOODBYE = (
-    "Farewell, **{user}**! Thanks for being part of **{server}**. "
-    "We hope to see you again! 👋"
+    "{mention} just left **{server}**. "
+    "Take care, **{user}**! 👋"
 )
 
 
@@ -147,6 +147,7 @@ async def handle_member_join(member: discord.Member, ai_brain=None):
     guild_id = str(guild.id)
     config   = get_server_manager_config(guild_id)
 
+    print(f"Member joined: {member.name}")
     log.info(
         "MEMBER JOIN  guild=%s (%s)  member=%s (%s)  member_count=%s",
         guild.id, guild.name, member.id, member.display_name, guild.member_count,
@@ -171,7 +172,7 @@ async def handle_member_join(member: discord.Member, ai_brain=None):
 
     # ── Welcome message ──────────────────────────────────────────────────────
     if not config.get("welcome_enabled"):
-        log.debug("Welcome messages disabled for guild %s — skipping", guild_id)
+        log.info("Welcome messages disabled for guild %s — run /welcome-on to enable", guild_id)
         return
 
     settings    = get_server_settings(guild_id)
@@ -222,13 +223,14 @@ async def handle_member_remove(member: discord.Member, ai_brain=None):
     guild_id = str(guild.id)
     config   = get_server_manager_config(guild_id)
 
+    print(f"Member left: {member.name}")
     log.info(
         "MEMBER LEAVE  guild=%s (%s)  member=%s (%s)",
         guild.id, guild.name, member.id, member.display_name,
     )
 
     if not config.get("goodbye_enabled"):
-        log.debug("Goodbye messages disabled for guild %s — skipping", guild_id)
+        log.info("Goodbye messages disabled for guild %s — run /goodbye-on to enable", guild_id)
         return
 
     settings    = get_server_settings(guild_id)

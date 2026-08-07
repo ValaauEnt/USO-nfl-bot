@@ -44,7 +44,7 @@ from features.announcements import (
 _ctx_guild  = contextvars.ContextVar("sm_guild",  default=None)
 _ctx_author = contextvars.ContextVar("sm_author", default=None)
 
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("uso")
 
 # ── Startup dependency check ───────────────────────────────────────────────────
@@ -3907,6 +3907,7 @@ async def on_ready():
 @bot.event
 async def on_member_join(member: discord.Member):
     """Auto-assign roles and post welcome messages when a member joins."""
+    print(f"Member joined: {member.name} (guild: {member.guild.name})")
     try:
         await handle_member_join(member, ai_brain=ai_brain)
     except Exception as exc:
@@ -3916,6 +3917,7 @@ async def on_member_join(member: discord.Member):
 @bot.event
 async def on_member_remove(member: discord.Member):
     """Post goodbye messages when a member leaves."""
+    print(f"Member left: {member.name} (guild: {member.guild.name})")
     try:
         await handle_member_remove(member, ai_brain=ai_brain)
     except Exception as exc:

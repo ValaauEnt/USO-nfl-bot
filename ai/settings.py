@@ -72,6 +72,11 @@ def init_db():
                 messages   TEXT DEFAULT '[]',
                 updated_at REAL
             );
+            CREATE TABLE IF NOT EXISTS channel_context (
+                channel_id TEXT PRIMARY KEY,
+                messages   TEXT DEFAULT '[]',
+                updated_at REAL
+            );
         """)
         conn.commit()
 

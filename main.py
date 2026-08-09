@@ -3122,6 +3122,22 @@ async def on_message(message: discord.Message):
     in_ai_ch  = ch_id_str in ai_chans
     conv_live = _conv.is_active(message.channel.id)
 
+    # ── Ambient pre-context tracking ─────────────────────────────────────────
+    # Silently record every non-bot message in AI-enabled channels so that
+    # when UCE IS triggered it can see what the channel was discussing before
+    # it was addressed.  This is a fast SQLite write — no OpenAI call, no
+    # blocking.  Only runs for configured AI channels to keep it targeted.
+    if in_ai_ch:
+        try:
+            from ai.memory import append_channel_context
+            append_channel_context(
+                ch_id_str,
+                message.author.display_name,
+                message.content or "",
+            )
+        except Exception:
+            pass  # never let context tracking break message handling
+
     # Decide whether to engage
     if mode == "silent":
         await bot.process_commands(message)

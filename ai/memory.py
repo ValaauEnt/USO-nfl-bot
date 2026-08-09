@@ -6,6 +6,11 @@ from ai.settings import _get_conn
 MAX_HISTORY          = 20   # messages kept per channel
 HISTORY_MAX_AGE_SECS = 4 * 3600  # conversations older than 4 h are stale — start fresh
 
+# Pre-context: ambient channel messages recorded before UCE is addressed.
+# Short window — we only need to know what the channel was just discussing.
+MAX_PRE_CONTEXT          = 10   # ambient messages buffered per channel
+PRE_CONTEXT_MAX_AGE_SECS = 1800  # 30 min — ambient context goes stale quickly
+
 
 # ── User memory ──────────────────────────────────────────────────────────────
 
@@ -120,3 +125,53 @@ def clear_conversation(channel_id: str):
             "DELETE FROM conversation_history WHERE channel_id=?", (channel_id,)
         )
         conn.commit()
+
+
+# ── Channel pre-context (ambient messages before UCE is addressed) ────────────
+# Records every non-bot message in AI-enabled channels so that when UCE IS
+# triggered, it can see what the channel was discussing moments before —
+# including conversations that never directly involved UCE.
+# This is kept separate from conversation_history (which only tracks UCE turns)
+# and is intentionally short-lived (30-minute TTL).
+
+def append_channel_context(channel_id: str, author_name: str, content: str):
+    """Record an ambient channel message for pre-context use.
+
+    Only stores messages up to 500 chars — long pastes / walls of text are
+    truncated to avoid inflating the context unnecessarily.
+    """
+    content = content[:500] if content else ""
+    if not content.strip():
+        return
+    messages = _load_channel_context_raw(channel_id)
+    messages.append({"author": author_name, "content": content})
+    if len(messages) > MAX_PRE_CONTEXT:
+        messages = messages[-MAX_PRE_CONTEXT:]
+    with _get_conn() as conn:
+        conn.execute("""
+            INSERT INTO channel_context (channel_id, messages, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(channel_id) DO UPDATE SET
+                messages   = excluded.messages,
+                updated_at = excluded.updated_at
+        """, (channel_id, json.dumps(messages), time.time()))
+        conn.commit()
+
+
+def get_channel_context(channel_id: str) -> list[dict]:
+    """Return recent ambient channel messages, or [] if absent / expired."""
+    return _load_channel_context_raw(channel_id)
+
+
+def _load_channel_context_raw(channel_id: str) -> list[dict]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT messages, updated_at FROM channel_context WHERE channel_id=?",
+            (channel_id,),
+        ).fetchone()
+    if not row:
+        return []
+    age = time.time() - (row["updated_at"] or 0)
+    if age > PRE_CONTEXT_MAX_AGE_SECS:
+        return []
+    return json.loads(row["messages"] or "[]")

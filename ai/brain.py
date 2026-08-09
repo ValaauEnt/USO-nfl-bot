@@ -195,6 +195,22 @@ class AIBrain:
                 "Do not guess or make up stats, names, or scores."
             )
 
+        # ── Pre-context: ambient channel messages before UCE was addressed ────
+        # These are non-UCE messages from the channel — what users were talking
+        # about before someone @mentioned the bot.  Injected into the system
+        # prompt (not the messages array) so they don't inflate token cost.
+        from ai.memory import get_channel_context  # local import avoids circular
+        pre_ctx = get_channel_context(channel_id)
+        if pre_ctx:
+            lines = [f"**{m['author']}**: {m['content']}" for m in pre_ctx]
+            system += (
+                "\n\n## Recent Channel Activity (before you were addressed)\n"
+                "These are the most recent messages in this channel. Use them to "
+                "understand the current topic, who's talking to whom, and what "
+                "any follow-up questions or corrections refer to.\n"
+                + "\n".join(lines)
+            )
+
         # ── Message history ───────────────────────────────────────────────────
         history  = get_conversation_history(channel_id)
         messages = [{"role": "system", "content": system}]

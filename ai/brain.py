@@ -16,7 +16,7 @@ from typing import Callable, Awaitable
 from openai import AsyncOpenAI
 
 from ai.personalities import build_system_prompt, CORE_TRAITS
-from ai.security import is_disclosure_request, DISCLOSURE_RESPONSE
+from ai.security import is_disclosure_request, filter_response, DISCLOSURE_RESPONSE
 from ai.memory import (
     get_conversation_history,
     append_conversation,
@@ -346,6 +346,9 @@ class AIBrain:
             cache_hit, api_ms, used_web_search, llm_used,
             len(final_text),
         )
+
+        # ── Layer 3+4: response validator — runs before Discord sees the text ───
+        final_text = filter_response(final_text)
 
         if final_text:
             append_conversation(channel_id, "assistant", final_text)

@@ -1,0 +1,107 @@
+Perform a forensic audit of UCE for possible historical unauthorized use of the OpenAI API key.
+
+IMPORTANT:
+This is an AUDIT ONLY. Do not rotate, revoke, replace, or modify any credentials.
+
+DO NOT PRINT, LOG, HASH, ENCODE, DECODE, OR REVEAL ANY API KEY OR SECRET.
+
+I specifically want to determine whether the UCE application or its AI/handoff functionality could have exposed or allowed unauthorized use of OPENAI_API_KEY.
+
+Audit the following:
+
+1. OPENAI_API_KEY ACCESS
+Determine every location in the code where OPENAI_API_KEY is:
+- Loaded
+- Read
+- Passed to the OpenAI client
+- Stored
+- Logged
+- Included in objects/configuration
+- Passed to tools
+- Passed to prompts/context
+- Returned in responses
+
+Report only whether each path is SAFE or POTENTIALLY EXPOSED.
+
+2. AI/HANDOFF ACCESS
+Trace whether the AI could ever access:
+- Environment variables
+- OPENAI_API_KEY
+- Configuration objects containing the key
+- .env files
+- Files containing secrets
+- Shell/command execution
+- Source files
+- Git history
+- Logs
+
+Determine whether any of these could enter the AI context.
+
+3. HISTORICAL CODE AUDIT
+Search current files AND git history for:
+- OPENAI_API_KEY
+- OpenAI key-shaped strings
+- accidental credential commits
+- debug output containing credentials
+- generated handoff documents containing credentials
+- logs containing credentials
+
+NEVER output the actual value.
+
+4. RESPONSE/LOG AUDIT
+Determine whether the OpenAI key could have appeared in:
+- Discord responses
+- AI responses
+- Handoff responses
+- Error messages
+- Web responses
+- Logs
+- Test output
+
+5. API REQUEST PATH
+Trace every OpenAI API request made by UCE.
+
+Document:
+- Where the request originates
+- Which code creates it
+- Which credential source is used
+- Whether any user-controlled input can affect the API key
+- Whether another user could cause UCE to make arbitrary OpenAI requests
+
+Do not make real unauthorized API requests.
+
+6. HISTORICAL EVIDENCE
+Look for application logs, audit logs, usage records, or other locally available evidence that could indicate unexpected OpenAI API usage.
+
+Do not assume that absence of local logs proves that unauthorized usage did not happen.
+
+7. FINAL ASSESSMENT
+
+Give me three separate conclusions:
+
+A. COULD THE UCE HANDOFF/AI HAVE EXPOSED THE OPENAI KEY?
+YES / NO / UNKNOWN
+
+B. DOES THE UCE CODE CONTAIN A PATH THAT COULD ALLOW A USER TO USE THE OPENAI KEY FOR THEIR OWN REQUESTS?
+YES / NO / UNKNOWN
+
+C. CAN UCE'S LOCAL LOGS PROVE WHETHER THE KEY WAS USED BY SOMEONE ELSE?
+YES / NO / UNKNOWN
+
+If historical usage cannot be determined from UCE itself, explicitly say that the OpenAI Usage Dashboard must be checked.
+
+8. DO NOT CHANGE THE APPLICATION
+
+This is a forensic audit only.
+
+Do not:
+- Rotate credentials
+- Delete logs
+- Modify security code
+- Modify AI behavior
+- Modify environment variables
+- Change OpenAI configuration
+
+Run the existing test suite afterward and confirm that no application files were modified.
+
+Never reveal any secret value in the report.

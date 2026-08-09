@@ -1,0 +1,162 @@
+I want to improve UCE's conversational intelligence so his responses are more accurate and natural.
+
+IMPORTANT:
+- This is ONLY for the existing UCE Discord bot.
+- Do NOT create any new Discord commands.
+- Do NOT add new slash commands, prefix commands, or user-facing commands.
+- Do NOT change or remove existing commands.
+- Do NOT modify unrelated bot functionality.
+- Do NOT rewrite the existing AI system unless necessary.
+- This should work automatically through UCE's existing message/conversation handling.
+
+CONVERSATION CONTEXT
+
+Sometimes UCE's responses are off because he only looks at the individual message instead of understanding the conversation happening around it.
+
+Improve UCE so he can use recent conversation context when responding.
+
+UCE should understand:
+- What people were talking about immediately before UCE was addressed
+- Who is talking to whom
+- The current topic of the conversation
+- Previous questions and answers
+- Follow-up questions
+- Corrections users make to UCE
+- Relevant server-specific terminology and slang
+- The tone and context of the conversation
+
+Example:
+
+User:
+"Uce what's the score?"
+
+UCE:
+"Chiefs are winning 21-17."
+
+User:
+"Nah, I mean the Madden game."
+
+UCE should understand that the second message is correcting the previous context and respond accordingly.
+
+Another example:
+
+User:
+"Who's taking the league tonight?"
+
+User:
+"Probably Mike."
+
+User:
+"Uce what do you think?"
+
+UCE should understand that "what do you think?" refers to the ongoing conversation about who will win the league instead of treating it as an unrelated question.
+
+CONTEXT HANDLING
+
+Give UCE a reasonable recent conversation window when he is responding.
+
+Prioritize:
+1. Messages directly involving UCE
+2. Messages immediately before someone addresses UCE
+3. Recent messages in the same conversation
+4. Corrections and clarifications
+5. Information directly relevant to the current question
+
+Do not send the entire channel history to the AI.
+
+Do not use unnecessarily large context windows that increase cost, latency, or token usage.
+
+LEARNING
+
+Allow UCE to learn useful conversational patterns from interactions over time.
+
+If users repeatedly use certain phrases, terminology, slang, or ways of asking UCE for things, UCE should become better at understanding them.
+
+If UCE gets corrected, use that correction to improve the current conversation and, when appropriate, future understanding.
+
+Do NOT blindly treat every statement as permanent knowledge.
+
+Distinguish between:
+
+- Temporary conversation context
+- Useful recurring server-specific terminology
+- Long-term learned information
+
+If something is only relevant to the current conversation, don't permanently store it.
+
+If something is repeatedly useful, allow it to become learned context.
+
+PRIVACY AND STORAGE
+
+Do not permanently store every Discord message.
+
+Use recent messages as temporary context for normal responses.
+
+Only persist information when there is a clear reason that it will improve future conversations.
+
+Do NOT store:
+- Passwords
+- API keys
+- Tokens
+- Secrets
+- Sensitive personal information
+- Unnecessary private conversation history
+
+Keep any persistent learned information isolated by Discord server.
+
+RESPONSE QUALITY
+
+Before generating a response, UCE should consider:
+
+"What is this person actually talking about?"
+
+rather than only:
+
+"What does this individual message say?"
+
+If the message is ambiguous, use the recent conversation to determine the most likely meaning.
+
+If UCE still isn't confident about what someone means, ask a natural clarification instead of confidently giving an unrelated answer.
+
+IMPORTANT:
+Do not make UCE respond to every conversation. Preserve the existing logic that determines when UCE should respond.
+
+PERFORMANCE AND COST
+
+Do not send every Discord message to the AI.
+
+Use the existing UCE trigger/message handling first.
+
+Only gather conversation context when UCE is actually responding or when context is necessary to determine the intent of the message.
+
+Keep the system efficient so it does not noticeably slow down UCE or unnecessarily increase AI/API costs.
+
+TESTING
+
+Add or update tests for:
+- Understanding previous messages
+- Follow-up questions
+- Corrections
+- Ambiguous messages
+- Conversation topic continuity
+- Server-specific terminology
+- Context expiration
+- Multiple users talking
+- UCE being addressed after several messages
+- Preventing unrelated old conversations from affecting responses
+- Preventing one server's learned context from affecting another server
+- Ensuring existing commands continue working exactly as they do now
+
+Before making major changes, inspect the existing UCE message/event handling, AI response system, database architecture, and any existing conversation/context functionality.
+
+First explain what you find and how you plan to integrate conversation context into the existing system.
+
+Then implement the improvement without creating any new Discord commands and without changing unrelated functionality.
+
+After implementation, run the relevant tests and report:
+- What files were changed
+- How UCE now uses conversation context
+- What information is temporarily remembered
+- What information, if any, is persistently learned
+- Test results
+- Any remaining limitations

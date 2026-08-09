@@ -16,6 +16,7 @@ Audit scope: every route was inspected. Tests verify:
 import asyncio
 import json
 import re
+import time as _time_mod
 import unittest
 
 import aiohttp
@@ -509,6 +510,335 @@ class TestCorsScope(unittest.TestCase):
         self.assertNotEqual(
             self._headers_for("/tos").get("Access-Control-Allow-Origin"), "*"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Rate limiter — test-local implementation mirroring _IPRateLimiter in main.py
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _TestRateLimiter:
+    """
+    Mirrors the production _IPRateLimiter for isolated unit testing.
+    Accepts configurable max_reqs, window, and optional trusted_proxy_ip.
+    """
+
+    def __init__(self, max_reqs: int, window_secs: float, trusted_proxy_ip=None):
+        self.max_reqs = max_reqs
+        self.window_secs = window_secs
+        self.trusted_proxy_ip = trusted_proxy_ip
+        self._store: dict = {}
+        self._last_sweep: float = 0.0
+
+    def _resolve_ip(self, request) -> str:
+        peer = request.remote or "unknown"
+        if self.trusted_proxy_ip and peer == self.trusted_proxy_ip:
+            xff = request.headers.get("X-Forwarded-For", "").strip()
+            if xff:
+                return xff.split(",")[0].strip()
+        return peer
+
+    def check(self, ip: str) -> tuple:
+        now = _time_mod.monotonic()
+        window_start = now - self.window_secs
+        bucket = self._store.setdefault(ip, [])
+        cutoff = next((i for i, t in enumerate(bucket) if t > window_start), len(bucket))
+        del bucket[:cutoff]
+        if len(bucket) >= self.max_reqs:
+            retry_after = int(self.window_secs - (now - bucket[0])) + 1
+            return False, retry_after
+        bucket.append(now)
+        # Periodic sweep: trim expired entries from ALL buckets, then drop empties.
+        if now - self._last_sweep > self.window_secs:
+            self._last_sweep = now
+            dead: list = []
+            for k, v in self._store.items():
+                exp = next((i for i, t in enumerate(v) if t > window_start), len(v))
+                del v[:exp]
+                if not v:
+                    dead.append(k)
+            for k in dead:
+                del self._store[k]
+        return True, 0
+
+    def as_middleware(self):
+        rl = self
+
+        @web.middleware
+        async def _mw(request, handler):
+            ip = rl._resolve_ip(request)
+            allowed, retry_after = rl.check(ip)
+            if not allowed:
+                return web.Response(
+                    text=_json.dumps({"error": "Too many requests", "retry_after": retry_after}),
+                    status=429,
+                    content_type="application/json",
+                    headers={"Retry-After": str(retry_after)},
+                )
+            return await handler(request)
+
+        return _mw
+
+
+def _build_rate_limited_app(
+    max_reqs: int = 60,
+    window: float = 60.0,
+    trusted_proxy_ip=None,
+) -> web.Application:
+    """Build a test aiohttp app with the rate limiter and security middleware."""
+    rl = _TestRateLimiter(max_reqs, window, trusted_proxy_ip)
+    app = web.Application(middlewares=[rl.as_middleware(), _security_middleware])
+    app.router.add_get("/",           _handle_root)
+    app.router.add_get("/tos",        _handle_tos)
+    app.router.add_get("/privacy",    _handle_privacy)
+    app.router.add_get("/invite",     _handle_invite)
+    app.router.add_get("/api/status", _handle_api_status)
+    app.router.add_route("*", "/{path_info:.*}", _handle_404)
+    return app
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. Rate limiting — all public routes, 429 + Retry-After, no spoofing bypass
+# ─────────────────────────────────────────────────────────────────────────────
+class TestRateLimiter(unittest.TestCase):
+    """
+    All tests use a low limit (3 reqs per 10 s) so 429 can be triggered in <5 requests.
+    Legitimate dashboard polling (60 req/min limit, JS polls every 15 s) is verified
+    separately using the production-scale limit.
+    """
+
+    # ── Basic 429 / 200 behaviour ─────────────────────────────────────────────
+
+    def test_under_limit_returns_200_root(self):
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(3, 10))) as c:
+                for _ in range(3):
+                    r = await c.get("/")
+                    self.assertEqual(r.status, 200)
+        _run(_())
+
+    def test_over_limit_returns_429_root(self):
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(3, 10))) as c:
+                for _ in range(3):
+                    await c.get("/")
+                r = await c.get("/")
+                self.assertEqual(r.status, 429)
+        _run(_())
+
+    def test_over_limit_returns_429_tos(self):
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(3, 10))) as c:
+                for _ in range(3):
+                    await c.get("/tos")
+                r = await c.get("/tos")
+                self.assertEqual(r.status, 429)
+        _run(_())
+
+    def test_over_limit_returns_429_privacy(self):
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(3, 10))) as c:
+                for _ in range(3):
+                    await c.get("/privacy")
+                r = await c.get("/privacy")
+                self.assertEqual(r.status, 429)
+        _run(_())
+
+    def test_over_limit_returns_429_invite(self):
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(3, 10))) as c:
+                for _ in range(3):
+                    await c.get("/invite", allow_redirects=False)
+                r = await c.get("/invite", allow_redirects=False)
+                self.assertEqual(r.status, 429)
+        _run(_())
+
+    def test_over_limit_returns_429_api_status(self):
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(3, 10))) as c:
+                for _ in range(3):
+                    await c.get("/api/status")
+                r = await c.get("/api/status")
+                self.assertEqual(r.status, 429)
+        _run(_())
+
+    # ── Response shape ────────────────────────────────────────────────────────
+
+    def test_429_includes_retry_after_header(self):
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(3, 10))) as c:
+                for _ in range(3):
+                    await c.get("/api/status")
+                r = await c.get("/api/status")
+                self.assertIn("Retry-After", r.headers)
+                self.assertGreater(int(r.headers["Retry-After"]), 0)
+        _run(_())
+
+    def test_429_retry_after_is_positive_integer(self):
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(1, 30))) as c:
+                await c.get("/")
+                r = await c.get("/")
+                val = r.headers.get("Retry-After", "")
+                self.assertTrue(val.isdigit(), f"Retry-After not a digit: {val!r}")
+                self.assertGreater(int(val), 0)
+        _run(_())
+
+    def test_429_body_is_json(self):
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(3, 10))) as c:
+                for _ in range(3):
+                    await c.get("/")
+                r = await c.get("/")
+                self.assertEqual(r.content_type, "application/json")
+                body = json.loads(await r.text())
+                self.assertIn("error", body)
+                self.assertIn("retry_after", body)
+        _run(_())
+
+    def test_429_body_retry_after_matches_header(self):
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(1, 30))) as c:
+                await c.get("/")
+                r = await c.get("/")
+                header_val = int(r.headers["Retry-After"])
+                body = json.loads(await r.text())
+                self.assertEqual(body["retry_after"], header_val)
+        _run(_())
+
+    def test_429_body_no_secrets(self):
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(1, 10))) as c:
+                await c.get("/")
+                r = await c.get("/")
+                text = await r.text()
+                for pat in _SECRET_PATTERNS:
+                    self.assertIsNone(pat.search(text))
+        _run(_())
+
+    # ── XFF spoofing prevention ───────────────────────────────────────────────
+
+    def test_xff_ignored_without_trusted_proxy(self):
+        """Without TRUSTED_PROXY_IP, spoofed XFF headers must NOT bypass the limiter."""
+        async def _():
+            rl = _TestRateLimiter(3, 10, trusted_proxy_ip=None)
+            app = web.Application(middlewares=[rl.as_middleware(), _security_middleware])
+            app.router.add_get("/", _handle_root)
+            app.router.add_route("*", "/{path_info:.*}", _handle_404)
+            async with TestClient(TestServer(app)) as c:
+                # 3 requests each claiming a different IP via XFF
+                for i in range(3):
+                    await c.get("/", headers={"X-Forwarded-For": f"10.0.0.{i}"})
+                # 4th request: different XFF, but should still be rate-limited
+                # because XFF is ignored and all count against 127.0.0.1
+                r = await c.get("/", headers={"X-Forwarded-For": "10.0.0.99"})
+                self.assertEqual(r.status, 429)
+        _run(_())
+
+    def test_xff_used_when_trusted_proxy_matches(self):
+        """With TRUSTED_PROXY_IP=127.0.0.1, the XFF value IS used as the client IP."""
+        async def _():
+            # TestClient connects from 127.0.0.1 — set that as the trusted proxy.
+            rl = _TestRateLimiter(3, 10, trusted_proxy_ip="127.0.0.1")
+            app = web.Application(middlewares=[rl.as_middleware(), _security_middleware])
+            app.router.add_get("/", _handle_root)
+            app.router.add_route("*", "/{path_info:.*}", _handle_404)
+            async with TestClient(TestServer(app)) as c:
+                # Exhaust limit for client A
+                for _ in range(3):
+                    await c.get("/", headers={"X-Forwarded-For": "10.0.0.1"})
+                r_a = await c.get("/", headers={"X-Forwarded-For": "10.0.0.1"})
+                self.assertEqual(r_a.status, 429)
+                # Client B has a fresh bucket — must succeed
+                r_b = await c.get("/", headers={"X-Forwarded-For": "10.0.0.2"})
+                self.assertEqual(r_b.status, 200)
+        _run(_())
+
+    def test_xff_ignored_when_peer_is_not_trusted_proxy(self):
+        """XFF ignored if the direct peer does NOT match the trusted proxy IP."""
+        async def _():
+            # Trusted proxy is 10.99.99.99, but TestClient connects from 127.0.0.1 —
+            # mismatch, so XFF must be ignored.
+            rl = _TestRateLimiter(3, 10, trusted_proxy_ip="10.99.99.99")
+            app = web.Application(middlewares=[rl.as_middleware(), _security_middleware])
+            app.router.add_get("/", _handle_root)
+            app.router.add_route("*", "/{path_info:.*}", _handle_404)
+            async with TestClient(TestServer(app)) as c:
+                for i in range(3):
+                    await c.get("/", headers={"X-Forwarded-For": f"10.0.0.{i}"})
+                # Limit hits because all go against the real peer IP (127.0.0.1)
+                r = await c.get("/", headers={"X-Forwarded-For": "10.0.0.99"})
+                self.assertEqual(r.status, 429)
+        _run(_())
+
+    # ── IP bucket isolation ───────────────────────────────────────────────────
+
+    def test_ip_buckets_are_isolated(self):
+        """Two different client IPs (via trusted-proxy XFF) don't share buckets."""
+        async def _():
+            rl = _TestRateLimiter(2, 10, trusted_proxy_ip="127.0.0.1")
+            app = web.Application(middlewares=[rl.as_middleware(), _security_middleware])
+            app.router.add_get("/", _handle_root)
+            app.router.add_route("*", "/{path_info:.*}", _handle_404)
+            async with TestClient(TestServer(app)) as c:
+                # Exhaust IP A
+                await c.get("/", headers={"X-Forwarded-For": "192.168.1.1"})
+                await c.get("/", headers={"X-Forwarded-For": "192.168.1.1"})
+                r_a = await c.get("/", headers={"X-Forwarded-For": "192.168.1.1"})
+                self.assertEqual(r_a.status, 429)
+                # IP B is untouched
+                r_b = await c.get("/", headers={"X-Forwarded-For": "192.168.1.2"})
+                self.assertEqual(r_b.status, 200)
+        _run(_())
+
+    # ── Memory cleanup ────────────────────────────────────────────────────────
+
+    def test_expired_entries_removed_from_bucket(self):
+        """Timestamps older than the window must be trimmed on the next check."""
+        rl = _TestRateLimiter(3, 0.01, trusted_proxy_ip=None)  # 10 ms window
+        rl.check("1.2.3.4")
+        rl.check("1.2.3.4")
+        self.assertEqual(len(rl._store.get("1.2.3.4", [])), 2)
+        _time_mod.sleep(0.02)  # let the window expire
+        rl.check("1.2.3.4")   # first check after expiry trims old entries
+        bucket = rl._store.get("1.2.3.4", [])
+        # Only the just-added timestamp survives (the two old ones were trimmed)
+        self.assertEqual(len(bucket), 1)
+
+    def test_empty_buckets_swept_periodically(self):
+        """
+        The periodic sweep trims expired entries from ALL buckets and removes
+        the ones that drain to empty — so stale IP entries don't accumulate.
+        """
+        rl = _TestRateLimiter(3, 0.01, trusted_proxy_ip=None)  # 10 ms window
+        rl.check("5.5.5.5")           # adds T1 for this IP
+        _time_mod.sleep(0.02)         # T1 expires (window = 10 ms)
+        rl._last_sweep = 0.0          # force the next request to trigger a full sweep
+        rl.check("5.5.5.6")           # sweep fires: trims T1 from 5.5.5.5 bucket → empty → removed
+        self.assertNotIn("5.5.5.5", rl._store)
+
+    # ── Legitimate use unaffected ─────────────────────────────────────────────
+
+    def test_legitimate_dashboard_js_poll_unaffected(self):
+        """
+        Dashboard JS polls /api/status every 15 s — that's ≤4 polls/min.
+        Production limit is 60 req/min, so legitimate use never hits 429.
+        """
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(60, 60))) as c:
+                # Simulate 4 polls (generous; real rate is much lower)
+                for _ in range(4):
+                    r = await c.get("/api/status")
+                    self.assertEqual(r.status, 200)
+        _run(_())
+
+    def test_single_page_load_unaffected(self):
+        """A normal page load (/, /tos, /privacy) must never be rate-limited."""
+        async def _():
+            async with TestClient(TestServer(_build_rate_limited_app(60, 60))) as c:
+                for path in ["/", "/tos", "/privacy"]:
+                    r = await c.get(path)
+                    self.assertEqual(r.status, 200, f"{path} was unexpectedly rate-limited")
+        _run(_())
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import os
 import re
 import html
+import time
 import random
 import asyncio
 from dotenv import load_dotenv
@@ -4230,6 +4231,126 @@ setInterval(refresh, 15000);
 
 _start_time = datetime.now(timezone.utc)
 
+# ── Per-IP rate limiter ────────────────────────────────────────────────────────
+# Reads TRUSTED_PROXY_IP from env. When set and the direct TCP peer matches,
+# the leftmost X-Forwarded-For value is used as the real client IP.
+# Without it, X-Forwarded-For is ignored entirely (prevents spoofing bypass).
+_TRUSTED_PROXY_IP: str | None = os.getenv("TRUSTED_PROXY_IP", "").strip() or None
+
+
+class _IPRateLimiter:
+    """
+    Sliding-window per-IP rate limiter for the aiohttp web server.
+
+    Algorithm: sliding window counter — for each IP, keep a list of monotonic
+    timestamps of recent requests. On each request, trim entries older than
+    `window_secs`, then reject if the remaining count >= `max_reqs`.
+
+    Memory: expired timestamps are removed per-request; empty IP buckets are
+    swept every `window_secs` seconds so the dict never grows without bound.
+    """
+
+    def __init__(
+        self,
+        max_reqs: int = 60,
+        window_secs: float = 60.0,
+        trusted_proxy_ip: str | None = None,
+    ) -> None:
+        self.max_reqs = max_reqs
+        self.window_secs = window_secs
+        self.trusted_proxy_ip = trusted_proxy_ip
+        self._store: dict[str, list[float]] = {}
+        self._last_sweep: float = 0.0
+
+    def _resolve_ip(self, request: aiohttp_web.Request) -> str:
+        """
+        Return the client IP to use for rate-limiting.
+
+        X-Forwarded-For is ONLY trusted when:
+          - `trusted_proxy_ip` is configured, AND
+          - the direct TCP peer (`request.remote`) matches that trusted proxy.
+        Otherwise the direct TCP peer is used unconditionally.
+        """
+        peer = request.remote or "unknown"
+        if self.trusted_proxy_ip and peer == self.trusted_proxy_ip:
+            xff = request.headers.get("X-Forwarded-For", "").strip()
+            if xff:
+                # Single trusted-proxy level: leftmost entry is the real client.
+                return xff.split(",")[0].strip()
+        return peer
+
+    def check(self, ip: str) -> tuple[bool, int]:
+        """
+        Returns (allowed, retry_after_seconds).
+        Records this request if allowed; always trims expired entries.
+        """
+        now = time.monotonic()
+        window_start = now - self.window_secs
+
+        bucket = self._store.setdefault(ip, [])
+
+        # Trim expired entries — bucket is always insertion-ordered (monotonically
+        # increasing timestamps), so a prefix-slice is sufficient.
+        cutoff = next(
+            (i for i, t in enumerate(bucket) if t > window_start),
+            len(bucket),
+        )
+        del bucket[:cutoff]
+
+        if len(bucket) >= self.max_reqs:
+            retry_after = int(self.window_secs - (now - bucket[0])) + 1
+            return False, retry_after
+
+        bucket.append(now)
+
+        # Periodic sweep: trim expired entries from ALL buckets, then remove
+        # empty ones.  Running this on every request would be O(n_ips) — instead
+        # we amortise it by running at most once per window period.
+        if now - self._last_sweep > self.window_secs:
+            self._last_sweep = now
+            dead: list[str] = []
+            for k, v in self._store.items():
+                exp = next(
+                    (i for i, t in enumerate(v) if t > window_start),
+                    len(v),
+                )
+                del v[:exp]
+                if not v:
+                    dead.append(k)
+            for k in dead:
+                del self._store[k]
+
+        return True, 0
+
+
+_rate_limiter = _IPRateLimiter(
+    max_reqs=60,
+    window_secs=60.0,
+    trusted_proxy_ip=_TRUSTED_PROXY_IP,
+)
+
+
+@aiohttp_web.middleware
+async def _rate_limit_middleware(request: aiohttp_web.Request, handler):
+    """
+    Rate-limiting middleware — runs before all other middleware.
+    Returns HTTP 429 with a Retry-After header when the per-IP limit is exceeded.
+    Logs only the client IP (no path, headers, or body) to avoid sensitive data exposure.
+    """
+    import json as _j
+    ip = _rate_limiter._resolve_ip(request)
+    allowed, retry_after = _rate_limiter.check(ip)
+    if not allowed:
+        log.warning("Rate limit exceeded ip=%s", ip)
+        return aiohttp_web.Response(
+            text=_j.dumps({"error": "Too many requests", "retry_after": retry_after}),
+            status=429,
+            content_type="application/json",
+            headers={"Retry-After": str(retry_after)},
+        )
+    return await handler(request)
+
+
 # ── Security headers added to every HTML response ─────────────────────────────
 _HTML_SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -4337,7 +4458,8 @@ async def handle_api_status(request):
 
 
 async def run_web_server():
-    app = aiohttp_web.Application(middlewares=[_security_middleware])
+    # Middleware order: rate limiter first (cheapest rejection), then security.
+    app = aiohttp_web.Application(middlewares=[_rate_limit_middleware, _security_middleware])
     app.router.add_get("/",           handle_root)
     app.router.add_get("/tos",        handle_tos)
     app.router.add_get("/privacy",    handle_privacy)

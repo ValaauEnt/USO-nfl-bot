@@ -16,6 +16,7 @@ from typing import Callable, Awaitable
 from openai import AsyncOpenAI
 
 from ai.personalities import build_system_prompt, CORE_TRAITS
+from ai.security import is_disclosure_request, DISCLOSURE_RESPONSE
 from ai.memory import (
     get_conversation_history,
     append_conversation,
@@ -123,6 +124,16 @@ class AIBrain:
     ) -> str:
         if not self.available:
             return "My brain needs an OPENAI_API_KEY to work — ask an admin to add it. 🤖"
+
+        # ── Proprietary protection — hard gate before any OpenAI call ─────────
+        # Catches high-confidence recreation/disclosure requests at the code level,
+        # independently of whatever the LLM decides via the system prompt.
+        if is_disclosure_request(content):
+            log.info(
+                "[SECURITY] Disclosure request blocked — guild=%s user=%s snippet=%.80r",
+                guild_id, user_id, content,
+            )
+            return DISCLOSURE_RESPONSE
 
         # ── Current date (injected dynamically — never rely on model's internal clock) ──
         now      = datetime.now(timezone.utc)

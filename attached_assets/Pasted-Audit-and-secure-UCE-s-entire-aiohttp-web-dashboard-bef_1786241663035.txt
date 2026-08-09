@@ -1,0 +1,87 @@
+Audit and secure UCE's entire aiohttp web dashboard before making any other feature changes.
+
+The AI disclosure protections in ai/security.py, ai/brain.py, and ai/personalities.py are already implemented and 144/144 tests are passing. Do NOT weaken, remove, or rewrite those protections.
+
+The remaining security concern is the aiohttp web server running on port 5000.
+
+I need a complete security audit of every web route and handler.
+
+Check every route for:
+
+- Missing authentication
+- Missing authorization
+- Public access to guild settings
+- Public access to database contents
+- Public access to internal configuration
+- Public access to environment variables
+- Public access to Discord configuration
+- Public access to EA/Madden configuration
+- Public access to API credentials
+- Debug endpoints
+- Health/status endpoints that expose sensitive information
+- File-serving routes
+- Directory traversal
+- Arbitrary file access
+- Command execution
+- Unsafe user input
+- Injection vulnerabilities
+- Sensitive information in error responses
+- Sensitive information in logs
+- CORS/security configuration issues
+- Missing CSRF protection where applicable
+- Missing rate limiting on sensitive routes
+
+IMPORTANT:
+
+The web dashboard must NOT provide a way to bypass the Discord AI security protections.
+
+If a route exposes administrative or private UCE information, require proper authentication AND authorization.
+
+Do not assume that knowing a URL is sufficient authorization.
+
+Do not expose:
+- Discord tokens
+- OpenAI API keys
+- EA/Madden credentials
+- Database credentials
+- OAuth secrets
+- Environment variables
+- Internal prompts
+- Source code
+- Database schemas
+- Internal file paths
+- Private configuration
+
+If the dashboard does not currently have a secure authentication system, do NOT invent a weak authentication mechanism.
+
+Instead:
+1. Identify which routes require protection.
+2. Restrict or disable unsafe routes if necessary.
+3. Report what authentication/authorization infrastructure is required.
+4. Preserve existing legitimate dashboard functionality where safely possible.
+
+Also inspect static-file serving and make sure users cannot request arbitrary files outside the intended public/static directory.
+
+Add automated tests for every security issue you identify and fix.
+
+IMPORTANT:
+Do not print or expose actual secrets while auditing.
+Do not include secrets in test output.
+Do not modify the existing AI security protections except where necessary to integrate dashboard security.
+
+After the audit:
+
+1. Run the complete existing test suite.
+2. Confirm the current 144 security tests still pass.
+3. Add tests for every dashboard security fix.
+4. Run the application and confirm it starts normally.
+5. Confirm Discord functionality still works.
+6. Report every web route that was inspected.
+7. Identify which routes are public.
+8. Identify which routes require authentication.
+9. Identify any routes that were disabled/restricted.
+10. List any remaining security vulnerabilities.
+
+Do not claim the dashboard is secure unless every route has actually been inspected.
+
+Do not expose secrets or proprietary source code in the final report.

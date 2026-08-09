@@ -4187,6 +4187,51 @@ setInterval(refresh, 15000);
 
 _start_time = datetime.now(timezone.utc)
 
+# ── Security headers added to every HTML response ─────────────────────────────
+_HTML_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options":        "DENY",
+    # Allows inline styles/scripts (used by the dashboard) and same-origin fetches.
+    "Content-Security-Policy": "default-src 'self' 'unsafe-inline'; connect-src 'self'",
+}
+
+
+@aiohttp_web.middleware
+async def _security_middleware(request: aiohttp_web.Request, handler):
+    """
+    Web-server security middleware (runs on every request):
+    1. Catches unhandled exceptions → returns a generic 500 JSON; never a traceback.
+    2. Adds security headers to every HTML response.
+    """
+    import json as _j
+    try:
+        response = await handler(request)
+    except aiohttp_web.HTTPException:
+        raise  # redirects and known HTTP errors pass through unchanged
+    except Exception:
+        log.exception("Unhandled web error %s %s", request.method, request.path)
+        return aiohttp_web.Response(
+            text=_j.dumps({"error": "Internal server error"}),
+            status=500,
+            content_type="application/json",
+        )
+    if response.content_type == "text/html":
+        response.headers.update(_HTML_SECURITY_HEADERS)
+    return response
+
+
+async def _handle_404(request: aiohttp_web.Request):
+    """
+    Custom 404 — returns a safe JSON body instead of aiohttp's default page,
+    which echoes the request path back and may leak internal routing detail.
+    """
+    import json as _j
+    return aiohttp_web.Response(
+        text=_j.dumps({"error": "Not found"}),
+        status=404,
+        content_type="application/json",
+    )
+
 
 async def handle_root(request):
     return aiohttp_web.Response(text=DASHBOARD_HTML, content_type="text/html")
@@ -4203,7 +4248,10 @@ async def handle_privacy(request):
 async def handle_invite(request):
     app_id = bot.application_id or (bot.user.id if bot.user else None)
     if app_id:
-        perms = 8  # Administrator — covers all bot actions
+        # permissions=8 (Administrator) is intentional — simplifies server setup.
+        # The application_id is public data (visible in any server the bot joins).
+        # Discord's OAuth flow still requires the user to own the target server.
+        perms = 8
         url = f"https://discord.com/api/oauth2/authorize?client_id={app_id}&permissions={perms}&scope=bot%20applications.commands"
     else:
         url = "https://discord.com/developers/applications"
@@ -4246,12 +4294,14 @@ async def handle_api_status(request):
 
 
 async def run_web_server():
-    app = aiohttp_web.Application()
-    app.router.add_get("/", handle_root)
-    app.router.add_get("/tos", handle_tos)
-    app.router.add_get("/privacy", handle_privacy)
-    app.router.add_get("/invite", handle_invite)
+    app = aiohttp_web.Application(middlewares=[_security_middleware])
+    app.router.add_get("/",           handle_root)
+    app.router.add_get("/tos",        handle_tos)
+    app.router.add_get("/privacy",    handle_privacy)
+    app.router.add_get("/invite",     handle_invite)
     app.router.add_get("/api/status", handle_api_status)
+    # Catch-all: any unregistered path returns a safe 404 (never echoes the path)
+    app.router.add_route("*", "/{path_info:.*}", _handle_404)
     runner = aiohttp_web.AppRunner(app)
     await runner.setup()
     site = aiohttp_web.TCPSite(runner, "0.0.0.0", 5000, reuse_address=True)

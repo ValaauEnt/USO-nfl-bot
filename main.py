@@ -4316,14 +4316,15 @@ async def main():
         await bot.start(TOKEN)
 
 
-if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN is missing. Add it in Replit Secrets.")
+if __name__ == "__main__":
+    if not TOKEN:
+        raise RuntimeError("DISCORD_TOKEN is missing. Add it in Replit Secrets.")
 
-try:
-    asyncio.run(main())
-finally:
-    async def _close():
-        global session
-        if session and not session.closed:
-            await session.close()
-    asyncio.run(_close())
+    try:
+        asyncio.run(main())
+    finally:
+        async def _close():
+            global session
+            if session and not session.closed:
+                await session.close()
+        asyncio.run(_close())

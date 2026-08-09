@@ -16,7 +16,7 @@ from typing import Callable, Awaitable
 from openai import AsyncOpenAI
 
 from ai.personalities import build_system_prompt, CORE_TRAITS
-from ai.security import is_disclosure_request, filter_response, DISCLOSURE_RESPONSE
+from ai.security import is_disclosure_request, filter_response, DISCLOSURE_RESPONSE, record_blocked_attempt
 from ai.memory import (
     get_conversation_history,
     append_conversation,
@@ -133,6 +133,7 @@ class AIBrain:
                 "[SECURITY] Disclosure request blocked — guild=%s user=%s snippet=%.80r",
                 guild_id, user_id, content,
             )
+            record_blocked_attempt(guild_id, user_id, content)
             return DISCLOSURE_RESPONSE
 
         # ── Current date (injected dynamically — never rely on model's internal clock) ──

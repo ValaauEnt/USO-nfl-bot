@@ -26,6 +26,7 @@ from ai.brain     import AIBrain
 from ai import conversation as _conv
 from ai import cooldowns    as _cd
 from ai.scheduler import run_checkins
+from ai.security  import drain_pending_alerts, ALERT_WINDOW_MINUTES
 
 # ── Server manager feature ────────────────────────────────────────────────────
 from features.serverManager.db      import init_server_manager_db, get_server_manager_config, upsert_server_manager_config
@@ -207,6 +208,45 @@ PLAYER_LOOKUP: dict[str, dict] = {}
 
 def normalize_name(name: str) -> str:
     return " ".join(name.lower().strip().split())
+
+
+async def _dispatch_security_alerts() -> None:
+    """Drain pending security alerts and DM each affected guild's owner.
+
+    Called after process_message returns whenever a blocked attempt may have
+    pushed a user over the repeat-abuse threshold.
+    """
+    alerts = drain_pending_alerts()
+    for alert in alerts:
+        guild = bot.get_guild(int(alert["guild_id"]))
+        if guild is None:
+            log.warning("[SECURITY] Alert: guild %s not in cache, skipping DM", alert["guild_id"])
+            continue
+        owner = guild.owner
+        if owner is None:
+            log.warning("[SECURITY] Alert: owner not cached for guild %s", guild.name)
+            continue
+        snippets_fmt = "\n".join(f"• {s}" for s in alert["snippets"])
+        dm_text = (
+            f"🚨 **Security Alert — {guild.name}**\n"
+            f"User <@{alert['user_id']}> (`{alert['user_id']}`) has made "
+            f"**{alert['count']}** blocked proprietary-information requests "
+            f"in the last {ALERT_WINDOW_MINUTES} minutes.\n\n"
+            f"**Sample blocked messages:**\n{snippets_fmt}\n\n"
+            f"_The user's counter has been reset. You will be alerted again if "
+            f"they continue after a fresh {ALERT_WINDOW_MINUTES}-minute window._"
+        )
+        try:
+            await owner.send(dm_text)
+            log.warning(
+                "[SECURITY] Owner DM sent — guild=%s user=%s attempts=%d",
+                alert["guild_id"], alert["user_id"], alert["count"],
+            )
+        except Exception as exc:
+            log.warning(
+                "[SECURITY] Failed to DM owner of guild %s: %s",
+                alert["guild_id"], exc,
+            )
 
 
 async def fetch_json(url: str) -> dict:
@@ -3148,6 +3188,8 @@ async def on_message(message: discord.Message):
             settings   = settings,
         )
 
+    await _dispatch_security_alerts()
+
     if reply:
         # Discord 2000-char limit
         chunks = [reply[i:i+2000] for i in range(0, len(reply), 2000)]
@@ -3185,6 +3227,7 @@ async def ask(interaction: discord.Interaction, question: str):
         channel_id = ch_id,
         settings   = settings,
     )
+    await _dispatch_security_alerts()
     if reply:
         chunks = [reply[i:i+2000] for i in range(0, len(reply), 2000)]
         await interaction.followup.send(chunks[0])

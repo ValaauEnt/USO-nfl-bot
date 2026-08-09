@@ -9,9 +9,27 @@ Layer 1 (system prompt SECURITY_RULES) lives in ai/personalities.py.
 Layer 5 (logging protection) confirmed clean — no secrets written to logs.
 """
 import re
+import time
 import logging
+from collections import defaultdict
 
 log = logging.getLogger("uso.security")
+
+# ─── Repeated-abuse detection — configurable thresholds ──────────────────────
+
+#: Number of blocked attempts within the window before alerting the guild owner.
+ALERT_THRESHOLD: int = 5
+#: Sliding window duration in minutes.
+ALERT_WINDOW_MINUTES: int = 10
+#: Max message snippets included in the owner DM.
+ALERT_MAX_SNIPPETS: int = 5
+
+# Keyed by (guild_id, user_id) → list of (timestamp_float, snippet_str)
+_attempt_log: dict[tuple[str, str], list[tuple[float, str]]] = defaultdict(list)
+
+# Alerts ready to be dispatched; drained by main.py after process_message returns.
+# Each entry: {"guild_id": str, "user_id": str, "count": int, "snippets": list[str]}
+_pending_alerts: list[dict] = []
 
 # ─── Canned refusals ──────────────────────────────────────────────────────────
 
@@ -149,6 +167,57 @@ _SECRET_RESPONSE_PATTERNS: list[re.Pattern] = [
 _BLUEPRINT_RESPONSE_PATTERNS: list[re.Pattern] = [
     re.compile(r'```[\s\S]{50,}```'),   # code block with substantial content
 ]
+
+
+def record_blocked_attempt(guild_id: str, user_id: str, snippet: str) -> bool:
+    """
+    Record a blocked proprietary-disclosure attempt for (guild_id, user_id).
+
+    Maintains a sliding window of ALERT_WINDOW_MINUTES minutes. Returns True
+    (and queues an owner-DM alert) the first time the attempt count reaches
+    ALERT_THRESHOLD within the window; resets the counter after the alert so
+    the owner is not spammed. Returns False otherwise.
+    """
+    key = (guild_id, user_id)
+    now = time.monotonic()
+    cutoff = now - ALERT_WINDOW_MINUTES * 60
+
+    # Keep only attempts within the window
+    attempts = _attempt_log[key]
+    attempts = [(ts, s) for ts, s in attempts if ts >= cutoff]
+    attempts.append((now, snippet[:200]))
+    _attempt_log[key] = attempts
+
+    if len(attempts) >= ALERT_THRESHOLD:
+        log.warning(
+            "[SECURITY] Threshold crossed — guild=%s user=%s attempts=%d in %dmin",
+            guild_id, user_id, len(attempts), ALERT_WINDOW_MINUTES,
+        )
+        snippets = [s for _, s in attempts[-ALERT_MAX_SNIPPETS:]]
+        _pending_alerts.append({
+            "guild_id": guild_id,
+            "user_id":  user_id,
+            "count":    len(attempts),
+            "snippets": snippets,
+        })
+        # Reset counter so the owner isn't DM'd on every subsequent attempt
+        _attempt_log[key] = []
+        return True
+
+    return False
+
+
+def drain_pending_alerts() -> list[dict]:
+    """
+    Return and clear all queued security alerts.
+
+    Called by main.py after process_message to dispatch owner DMs.
+    Thread-safety note: this runs inside a single asyncio event loop so
+    no locking is required.
+    """
+    alerts = list(_pending_alerts)
+    _pending_alerts.clear()
+    return alerts
 
 
 def is_disclosure_request(text: str) -> bool:

@@ -3270,6 +3270,7 @@ async def ask(interaction: discord.Interaction, question: str):
 )
 @app_commands.choices(
     personality=[
+        app_commands.Choice(name="🔀 Auto — reads the room and switches automatically", value="auto"),
         app_commands.Choice(name="🏈 Locker Room — one of the boys (default)", value="locker_room"),
         app_commands.Choice(name="📋 Coach — motivational and strategic",        value="coach"),
         app_commands.Choice(name="🔥 Trash Talker — witty and competitive",      value="trash_talker"),
@@ -3355,6 +3356,7 @@ async def ai_personality_cmd(
     s = get_server_settings(guild_id)
 
     _PERSONALITY_LABELS = {
+        "auto":         "🔀 Auto",
         "locker_room":  "🏈 Locker Room",
         "coach":        "📋 Coach",
         "trash_talker": "🔥 Trash Talker",

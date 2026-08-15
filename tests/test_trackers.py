@@ -435,3 +435,340 @@ def test_scoreboard_command_has_channel_param():
     import pathlib
     src = pathlib.Path("main.py").read_text(encoding="utf-8")
     assert "async def scoreboard(interaction: discord.Interaction, channel: discord.TextChannel | None = None)" in src
+
+
+# ---------------------------------------------------------------------------
+# 9. Per-guild cap and duplicate detection
+# ---------------------------------------------------------------------------
+
+def test_guild_tracker_count_empty():
+    assert m._guild_tracker_count(1) == 0
+
+
+def test_guild_tracker_count_only_counts_target_guild():
+    m._LIVE_TRACKERS["a"] = _mk_state("a", channel_id=1)   # guild_id=1 (from helper)
+    m._LIVE_TRACKERS["b"] = _mk_state("b", channel_id=2)   # guild_id=1
+    # Add a tracker for a different guild
+    other = m.TrackerState(tracker_id="c", game_id="g3", channel_id=3, guild_id=99, owner_id=5)
+    m._LIVE_TRACKERS["c"] = other
+    assert m._guild_tracker_count(1) == 2
+    assert m._guild_tracker_count(99) == 1
+    assert m._guild_tracker_count(2) == 0
+
+
+def test_guild_tracker_count_none_guild():
+    # guild_id=None (DMs) always returns 0 to avoid blocking DM usage
+    assert m._guild_tracker_count(None) == 0
+
+
+def test_find_duplicate_tracker_no_match():
+    m._LIVE_TRACKERS["t1"] = _mk_state("t1", game_id="g1", channel_id=111)
+    assert m._find_duplicate_tracker(guild_id=1, channel_id=222, game_id="g1") is None  # different channel
+    assert m._find_duplicate_tracker(guild_id=2, channel_id=111, game_id="g1") is None  # different guild
+
+
+def test_find_duplicate_tracker_match():
+    s = _mk_state("t1", game_id="g1", channel_id=111)
+    m._LIVE_TRACKERS["t1"] = s
+    found = m._find_duplicate_tracker(guild_id=1, channel_id=111, game_id="g1")
+    assert found is s
+
+
+def test_find_duplicate_all_games_tracker():
+    s = m.TrackerState(tracker_id="all", game_id=None, channel_id=555, guild_id=1, owner_id=7)
+    m._LIVE_TRACKERS["all"] = s
+    assert m._find_duplicate_tracker(guild_id=1, channel_id=555, game_id=None) is s
+    assert m._find_duplicate_tracker(guild_id=1, channel_id=555, game_id="g1") is None  # different game_id
+
+
+def _mk_click_interaction_with_guild(user_id, channel, guild_id=1):
+    inter = MagicMock()
+    inter.user.id = user_id
+    inter.guild_id = guild_id
+    inter.channel = channel
+    inter.data = {"values": ["g1"]}
+    inter.response.defer = AsyncMock()
+    inter.followup.send = AsyncMock()
+    return inter
+
+
+def _make_channel(cid=555):
+    channel = MagicMock()
+    channel.id = cid
+    channel.mention = f"#ch{cid}"
+    channel.send = AsyncMock(return_value=MagicMock(id=999))
+    return channel
+
+
+def test_single_tracker_blocked_at_guild_cap():
+    """Starting a 6th tracker in a guild returns an ephemeral error, no new tracker created."""
+    async def run():
+        # Fill the guild up to the cap
+        for i in range(m._MAX_TRACKERS_PER_GUILD):
+            s = m.TrackerState(
+                tracker_id=f"existing-{i}", game_id=f"gx{i}",
+                channel_id=100 + i, guild_id=1, owner_id=1,
+            )
+            m._LIVE_TRACKERS[f"existing-{i}"] = s
+
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(999)
+        inter = _mk_click_interaction_with_guild(user_id=200, channel=channel, guild_id=1)
+
+        with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+             patch.object(m.asyncio, "create_task", lambda coro: (coro.close(), MagicMock())[1]):
+            await view._on_live_game_select(inter)
+
+        # No new tracker should have been added
+        guild_trackers = [s for s in m._LIVE_TRACKERS.values() if s.guild_id == 1]
+        assert len(guild_trackers) == m._MAX_TRACKERS_PER_GUILD
+        inter.followup.send.assert_awaited_once()
+        msg = inter.followup.send.await_args.args[0]
+        assert "maximum" in msg.lower() or "active trackers" in msg.lower()
+    asyncio.run(run())
+
+
+def test_single_tracker_blocked_on_duplicate():
+    """Starting a tracker for a game already tracked in the same channel is rejected."""
+    async def run():
+        existing = _mk_state("dup", game_id="g1", channel_id=555)
+        m._LIVE_TRACKERS["dup"] = existing
+
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(555)
+        inter = _mk_click_interaction_with_guild(user_id=200, channel=channel, guild_id=1)
+
+        with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+             patch.object(m.asyncio, "create_task", lambda coro: (coro.close(), MagicMock())[1]):
+            await view._on_live_game_select(inter)
+
+        # Registry still has only the one original tracker
+        assert len(m._LIVE_TRACKERS) == 1
+        assert "dup" in m._LIVE_TRACKERS
+        inter.followup.send.assert_awaited_once()
+        msg = inter.followup.send.await_args.args[0]
+        assert "already" in msg.lower()
+    asyncio.run(run())
+
+
+def test_all_games_tracker_blocked_at_guild_cap():
+    """📡 Track All is rejected when the guild is at the cap."""
+    async def run():
+        for i in range(m._MAX_TRACKERS_PER_GUILD):
+            s = m.TrackerState(
+                tracker_id=f"ex-{i}", game_id=f"gx{i}",
+                channel_id=200 + i, guild_id=1, owner_id=1,
+            )
+            m._LIVE_TRACKERS[f"ex-{i}"] = s
+
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(888)
+        inter = _mk_click_interaction_with_guild(user_id=300, channel=channel, guild_id=1)
+
+        with patch.object(m, "get_scoreboard_data", AsyncMock(return_value=([_live_game("g1")], meta))), \
+             patch.object(m.asyncio, "create_task", lambda coro: (coro.close(), MagicMock())[1]):
+            await view._track_all_live_games(inter)
+
+        guild_trackers = [s for s in m._LIVE_TRACKERS.values() if s.guild_id == 1]
+        assert len(guild_trackers) == m._MAX_TRACKERS_PER_GUILD
+        inter.followup.send.assert_awaited_once()
+        msg = inter.followup.send.await_args.args[0]
+        assert "maximum" in msg.lower() or "active trackers" in msg.lower()
+    asyncio.run(run())
+
+
+def test_all_games_tracker_blocked_on_duplicate():
+    """A second all-games tracker in the same channel is rejected."""
+    async def run():
+        existing = m.TrackerState(
+            tracker_id="all-dup", game_id=None, channel_id=555, guild_id=1, owner_id=7
+        )
+        m._LIVE_TRACKERS["all-dup"] = existing
+
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(555)
+        inter = _mk_click_interaction_with_guild(user_id=300, channel=channel, guild_id=1)
+
+        with patch.object(m, "get_scoreboard_data", AsyncMock(return_value=([_live_game("g1")], meta))), \
+             patch.object(m.asyncio, "create_task", lambda coro: (coro.close(), MagicMock())[1]):
+            await view._track_all_live_games(inter)
+
+        assert len(m._LIVE_TRACKERS) == 1
+        assert "all-dup" in m._LIVE_TRACKERS
+        inter.followup.send.assert_awaited_once()
+        msg = inter.followup.send.await_args.args[0]
+        assert "already" in msg.lower()
+    asyncio.run(run())
+
+
+def test_tracker_allowed_when_below_cap():
+    """A tracker for a different game in a different channel is allowed when below the cap."""
+    async def run():
+        # 4 existing trackers (below cap of 5)
+        for i in range(m._MAX_TRACKERS_PER_GUILD - 1):
+            s = m.TrackerState(
+                tracker_id=f"ok-{i}", game_id=f"gx{i}",
+                channel_id=300 + i, guild_id=1, owner_id=1,
+            )
+            m._LIVE_TRACKERS[f"ok-{i}"] = s
+
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(999)
+        inter = _mk_click_interaction_with_guild(user_id=200, channel=channel, guild_id=1)
+
+        with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+             patch.object(m.asyncio, "create_task", lambda coro: (coro.close(), MagicMock())[1]):
+            await view._on_live_game_select(inter)
+
+        guild_trackers = [s for s in m._LIVE_TRACKERS.values() if s.guild_id == 1]
+        assert len(guild_trackers) == m._MAX_TRACKERS_PER_GUILD
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 10. Concurrent race-condition tests (atomic reservation)
+# ---------------------------------------------------------------------------
+
+def test_concurrent_single_trackers_respect_guild_cap():
+    """Firing N simultaneous tracker starts (N > cap) must leave at most cap trackers."""
+    async def run():
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        cap = m._MAX_TRACKERS_PER_GUILD
+        # Simulate (cap + 2) concurrent clicks on different games, each with a
+        # slow get_game_summary that yields to the event loop before returning.
+        async def slow_summary(*_a, **_kw):
+            await asyncio.sleep(0)  # yield — lets other coroutines advance
+            return {}
+
+        views_and_inters = []
+        for i in range(cap + 2):
+            game = _live_game(f"g{i}")
+            view = m.ScoreboardView([game], meta, dest_channel_id=None, owner_id=100)
+            channel = _make_channel(900 + i)
+            inter = _mk_click_interaction_with_guild(user_id=200 + i, channel=channel, guild_id=1)
+            inter.data = {"values": [f"g{i}"]}
+            views_and_inters.append((view, inter))
+
+        tasks_created = []
+        def fake_create_task(coro):
+            coro.close()
+            t = MagicMock()
+            tasks_created.append(t)
+            return t
+
+        with patch.object(m, "get_game_summary", slow_summary), \
+             patch.object(m.asyncio, "create_task", fake_create_task):
+            await asyncio.gather(*(v._on_live_game_select(i) for v, i in views_and_inters))
+
+        guild_trackers = [s for s in m._LIVE_TRACKERS.values() if s.guild_id == 1]
+        assert len(guild_trackers) <= cap, (
+            f"Expected at most {cap} trackers, got {len(guild_trackers)}"
+        )
+    asyncio.run(run())
+
+
+def test_concurrent_duplicate_single_trackers_deduplicated():
+    """Two simultaneous clicks on the same game+channel must produce exactly one tracker."""
+    async def run():
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+
+        async def slow_summary(*_a, **_kw):
+            await asyncio.sleep(0)
+            return {}
+
+        game = _live_game("g1")
+        channel = _make_channel(555)
+
+        def make_view_inter(uid):
+            view = m.ScoreboardView([game], meta, dest_channel_id=None, owner_id=100)
+            inter = _mk_click_interaction_with_guild(user_id=uid, channel=channel, guild_id=1)
+            inter.data = {"values": ["g1"]}
+            return view, inter
+
+        pairs = [make_view_inter(uid) for uid in (201, 202)]
+
+        def fake_create_task(coro):
+            coro.close()
+            return MagicMock()
+
+        with patch.object(m, "get_game_summary", slow_summary), \
+             patch.object(m.asyncio, "create_task", fake_create_task):
+            await asyncio.gather(*(v._on_live_game_select(i) for v, i in pairs))
+
+        game1_trackers = [s for s in m._LIVE_TRACKERS.values()
+                          if s.guild_id == 1 and s.game_id == "g1" and s.channel_id == 555]
+        assert len(game1_trackers) == 1, (
+            f"Expected exactly 1 tracker for g1/ch555, got {len(game1_trackers)}"
+        )
+    asyncio.run(run())
+
+
+def test_concurrent_all_games_trackers_respect_guild_cap():
+    """Firing (cap+2) simultaneous Track-All clicks must leave at most cap trackers."""
+    async def run():
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        cap = m._MAX_TRACKERS_PER_GUILD
+
+        async def slow_scoreboard(*_a, **_kw):
+            await asyncio.sleep(0)
+            return ([_live_game("g1")], meta)
+
+        def fake_create_task(coro):
+            coro.close()
+            return MagicMock()
+
+        views_and_inters = []
+        for i in range(cap + 2):
+            view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+            channel = _make_channel(800 + i)
+            inter = _mk_click_interaction_with_guild(user_id=300 + i, channel=channel, guild_id=1)
+            views_and_inters.append((view, inter))
+
+        with patch.object(m, "get_scoreboard_data", slow_scoreboard), \
+             patch.object(m.asyncio, "create_task", fake_create_task):
+            await asyncio.gather(*(v._track_all_live_games(i) for v, i in views_and_inters))
+
+        guild_trackers = [s for s in m._LIVE_TRACKERS.values() if s.guild_id == 1]
+        assert len(guild_trackers) <= cap, (
+            f"Expected at most {cap} trackers, got {len(guild_trackers)}"
+        )
+    asyncio.run(run())
+
+
+def test_concurrent_duplicate_all_games_trackers_deduplicated():
+    """Two simultaneous Track-All clicks on the same channel yield exactly one tracker."""
+    async def run():
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+
+        async def slow_scoreboard(*_a, **_kw):
+            await asyncio.sleep(0)
+            return ([_live_game("g1")], meta)
+
+        channel = _make_channel(777)
+
+        def make_view_inter(uid):
+            view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+            inter = _mk_click_interaction_with_guild(user_id=uid, channel=channel, guild_id=1)
+            return view, inter
+
+        pairs = [make_view_inter(uid) for uid in (301, 302)]
+
+        def fake_create_task(coro):
+            coro.close()
+            return MagicMock()
+
+        with patch.object(m, "get_scoreboard_data", slow_scoreboard), \
+             patch.object(m.asyncio, "create_task", fake_create_task):
+            await asyncio.gather(*(v._track_all_live_games(i) for v, i in pairs))
+
+        all_trackers = [s for s in m._LIVE_TRACKERS.values()
+                        if s.guild_id == 1 and s.game_id is None and s.channel_id == 777]
+        assert len(all_trackers) == 1, (
+            f"Expected exactly 1 all-games tracker for ch777, got {len(all_trackers)}"
+        )
+    asyncio.run(run())

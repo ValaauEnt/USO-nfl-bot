@@ -73,6 +73,24 @@ class TrackerState:
 
 _LIVE_TRACKERS: dict[str, TrackerState] = {}
 
+# Maximum number of active trackers allowed per guild at any one time.
+_MAX_TRACKERS_PER_GUILD: int = 5
+
+
+def _guild_tracker_count(guild_id: int | None) -> int:
+    """Return the number of active trackers for *guild_id*."""
+    if guild_id is None:
+        return 0
+    return sum(1 for s in _LIVE_TRACKERS.values() if s.guild_id == guild_id)
+
+
+def _find_duplicate_tracker(guild_id: int | None, channel_id: int, game_id: str | None) -> TrackerState | None:
+    """Return an existing active tracker for the same guild/channel/game, or None."""
+    for s in _LIVE_TRACKERS.values():
+        if s.guild_id == guild_id and s.channel_id == channel_id and s.game_id == game_id:
+            return s
+    return None
+
 
 def _stop_tracker(tracker_id: str) -> None:
     """Remove a tracker from the registry, mark inactive, and cancel its task."""
@@ -2146,30 +2164,59 @@ class ScoreboardView(discord.ui.View):
         if dest_channel is None:
             dest_channel = interaction.channel
 
+        guild_id = interaction.guild_id
+        channel_id = dest_channel.id
+
+        # ── Atomic reservation (no await between check and registry insert) ──
+        # Duplicate check: same game already tracked in the same channel
+        dup = _find_duplicate_tracker(guild_id, channel_id, game_id)
+        if dup is not None:
+            await interaction.followup.send(
+                "⚠️ That game is already being tracked in this channel. "
+                "Use the **🛑 End Tracking** button on the existing tracker first.",
+                ephemeral=True,
+            )
+            return
+
+        # Per-guild cap
+        if _guild_tracker_count(guild_id) >= _MAX_TRACKERS_PER_GUILD:
+            await interaction.followup.send(
+                f"⚠️ This server already has **{_MAX_TRACKERS_PER_GUILD} active trackers** — "
+                "the maximum allowed. End an existing tracker before starting a new one.",
+                ephemeral=True,
+            )
+            return
+
+        # Reserve the slot BEFORE the first await so concurrent interactions
+        # see it immediately (asyncio is single-threaded; code between awaits
+        # is atomic, so this check+insert pair cannot be interleaved).
+        tracker_id = uuid.uuid4().hex
+        state = TrackerState(
+            tracker_id=tracker_id,
+            game_id=game_id,
+            channel_id=channel_id,
+            guild_id=guild_id,
+            owner_id=interaction.user.id,
+        )
+        _LIVE_TRACKERS[tracker_id] = state  # slot reserved — now safe to await
+        # ── End atomic reservation ────────────────────────────────────────────
+
         try:
             summary = await get_game_summary(game_id)
         except Exception:
             summary = {}
 
-        tracker_id = uuid.uuid4().hex
-        state = TrackerState(
-            tracker_id=tracker_id,
-            game_id=game_id,
-            channel_id=dest_channel.id,
-            guild_id=interaction.guild_id,
-            owner_id=interaction.user.id,
-        )
         view  = LiveTrackerView(tracker_id)
         embed = _build_tracker_embed(game, summary, _now_stamp(), final=_is_game_final(game))
         try:
             message = await dest_channel.send(embed=embed, view=view)
         except discord.Forbidden:
+            _stop_tracker(tracker_id)  # release reservation on failure
             await interaction.followup.send(
                 "🚩 I can't post in that channel — check my permissions.", ephemeral=True,
             )
             return
         state.message_id = message.id
-        _LIVE_TRACKERS[tracker_id] = state
         state.task = asyncio.create_task(_run_single_game_tracker(tracker_id))
         await interaction.followup.send(
             f"📡 Now tracking **{game.get('away_name', game['away_team'])} vs "
@@ -2189,24 +2236,52 @@ class ScoreboardView(discord.ui.View):
         if dest_channel is None:
             dest_channel = interaction.channel
 
+        guild_id = interaction.guild_id
+        channel_id = dest_channel.id
+
+        # ── Atomic reservation (no await between check and registry insert) ──
+        # Duplicate check: all-games tracker (game_id=None) already in same channel
+        dup = _find_duplicate_tracker(guild_id, channel_id, None)
+        if dup is not None:
+            await interaction.followup.send(
+                "⚠️ An all-games tracker is already running in this channel. "
+                "Use the **🛑 End Tracking** button on the existing tracker first.",
+                ephemeral=True,
+            )
+            return
+
+        # Per-guild cap
+        if _guild_tracker_count(guild_id) >= _MAX_TRACKERS_PER_GUILD:
+            await interaction.followup.send(
+                f"⚠️ This server already has **{_MAX_TRACKERS_PER_GUILD} active trackers** — "
+                "the maximum allowed. End an existing tracker before starting a new one.",
+                ephemeral=True,
+            )
+            return
+
+        # Reserve the slot BEFORE the first await (same rationale as single-game handler).
+        tracker_id = uuid.uuid4().hex
+        state = TrackerState(
+            tracker_id=tracker_id,
+            game_id=None,
+            channel_id=channel_id,
+            guild_id=guild_id,
+            owner_id=interaction.user.id,
+        )
+        _LIVE_TRACKERS[tracker_id] = state  # slot reserved — now safe to await
+        # ── End atomic reservation ────────────────────────────────────────────
+
         try:
             games, _ = await get_scoreboard_data()
         except Exception:
             games = self.games
 
-        tracker_id = uuid.uuid4().hex
-        state = TrackerState(
-            tracker_id=tracker_id,
-            game_id=None,
-            channel_id=dest_channel.id,
-            guild_id=interaction.guild_id,
-            owner_id=interaction.user.id,
-        )
         view  = AllGamesTrackerView(tracker_id)
         embed = _build_all_games_tracker_embed(games, _now_stamp())
         try:
             message = await dest_channel.send(embed=embed, view=view)
         except discord.Forbidden:
+            _stop_tracker(tracker_id)  # release reservation on failure
             await interaction.followup.send(
                 "🚩 I can't post in that channel — check my permissions.", ephemeral=True,
             )

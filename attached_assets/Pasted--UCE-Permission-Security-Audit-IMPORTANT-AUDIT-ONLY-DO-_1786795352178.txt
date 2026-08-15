@@ -1,0 +1,381 @@
+# UCE Permission & Security Audit
+
+## 🚨 IMPORTANT: AUDIT ONLY — DO NOT MODIFY CODE
+
+Perform a complete read-only audit of UCE's permission and authorization system.
+
+**DO NOT:**
+
+* modify any files
+* create new files
+* delete files
+* rename files
+* install packages
+* change configuration
+* change database data
+* change environment variables
+* commit changes
+* create a new checkpoint
+* restart or redeploy the bot
+
+This is an inspection only.
+
+The purpose of this audit is to determine whether UCE's existing commands are actually protected from unauthorized users before we add natural-language AI command execution.
+
+---
+
+# 1. FIND ALL DISCORD COMMANDS
+
+Search the entire UCE project for all command definitions, including:
+
+* `@bot.tree.command`
+* `@app_commands.command`
+* `@commands.command`
+* command registration systems
+* command decorators
+* command groups
+* cogs
+* dynamically registered commands
+
+Do not limit the search to `main.py`.
+
+Create a complete list of the commands you find.
+
+For each command report:
+
+```text
+Command:
+File:
+Line:
+Description:
+```
+
+---
+
+# 2. FIND ALL PERMISSION CHECKS
+
+Search the entire project for authorization and permission logic, including:
+
+* `interaction.user.guild_permissions`
+* `administrator`
+* `manage_guild`
+* `manage_channels`
+* `manage_roles`
+* `ban_members`
+* `kick_members`
+* `manage_messages`
+* `is_owner`
+* `has_permissions`
+* `default_permissions`
+* `app_commands.check`
+* `@commands.has_permissions`
+* global command checks
+* custom authorization functions
+* role-based checks
+* server-owner checks
+* permission helper functions
+* AI-specific authorization checks
+
+Determine where each permission check is actually enforced.
+
+---
+
+# 3. SERVER-MANAGEMENT COMMANDS
+
+Pay special attention to these commands if they exist:
+
+* `/create-channel`
+* `/delete-channel`
+* `/rename-server`
+* `/create-category`
+* `/create-role`
+* `/delete-role`
+* `/rename-role`
+* `/announce`
+* any command that modifies channels
+* any command that modifies categories
+* any command that modifies roles
+* any command that modifies permissions
+* any command that changes server settings
+* any command that can delete server content
+
+For every one, determine:
+
+```text
+Command:
+User authorization required:
+Exact permission required:
+Where authorization is checked:
+Bot permission required:
+Where bot permission is checked:
+Is the command actually protected?
+```
+
+---
+
+# 4. DO NOT ASSUME "ADMIN ONLY" IS REAL
+
+Some commands may have descriptions such as:
+
+`[Admin only]`
+
+Do NOT treat that description as a security control.
+
+Verify that an actual authorization check exists in code.
+
+For example:
+
+```python
+description="Create a new channel [Admin only]"
+```
+
+does NOT prove the command is administrator-only.
+
+Find the actual permission enforcement.
+
+---
+
+# 5. CHECK FOR GLOBAL PROTECTION
+
+Determine whether UCE has a global permission system that protects commands automatically.
+
+Look for things such as:
+
+```python
+@bot.tree.interaction_check
+```
+
+or:
+
+```python
+@bot.check
+```
+
+or:
+
+```python
+tree.on_error
+```
+
+or custom middleware/interceptors.
+
+If a global system exists, explain exactly which commands it protects and how.
+
+Do not assume it protects everything.
+
+---
+
+# 6. CHECK AI SECURITY
+
+Inspect the existing AI system, especially:
+
+* `ai_brain`
+* AI tools
+* tools executor
+* tool registry
+* function calling
+* action handlers
+* `_ctx_guild`
+* `_ctx_author`
+* `/ask`
+* AI settings
+* server-management tools
+
+Determine whether the AI can currently perform actions that modify Discord.
+
+For every AI tool that can take an action, report:
+
+```text
+Tool:
+File:
+Purpose:
+Who can use it:
+Permission check:
+Where permission is checked:
+Can a normal member invoke it?
+```
+
+---
+
+# 7. CHECK FOR PERMISSION BYPASS
+
+Look specifically for paths where a user could potentially bypass a command's normal permission system by using:
+
+* `/ask`
+* natural-language AI
+* AI tools
+* another command
+* direct function calls
+* callbacks
+* background tasks
+* internal helper functions
+
+Example:
+
+```text
+Normal command:
+User → permission check → action
+
+Potential AI path:
+User → /ask → AI → tool → action
+```
+
+Determine whether the second path has equivalent authorization.
+
+---
+
+# 8. CHECK DESTRUCTIVE ACTIONS
+
+Identify any commands or AI tools capable of:
+
+* deleting channels
+* deleting categories
+* deleting roles
+* banning users
+* kicking users
+* modifying permissions
+* renaming the server
+* mass operations
+* changing important server configuration
+
+Report whether they require:
+
+* Administrator
+* Manage Server
+* Manage Channels
+* Manage Roles
+* another permission
+* server ownership
+* custom UCE authorization
+
+Do not change any of these permissions.
+
+---
+
+# 9. CHECK FOR COMMAND/TOOL REUSE
+
+Determine whether existing Discord commands call reusable functions underneath them.
+
+For example:
+
+```text
+/create-channel
+      ↓
+create_channel(...)
+```
+
+If so, report whether the underlying function itself performs authorization or whether authorization only occurs at the Discord command layer.
+
+This is extremely important for the future AI system.
+
+We need to know whether:
+
+```text
+AI → underlying function
+```
+
+could accidentally bypass:
+
+```text
+User → slash command → permission check
+```
+
+---
+
+# 10. SECURITY RATING
+
+For each important server-management command, assign:
+
+### 🟢 PROTECTED
+
+A verified user authorization check exists and cannot reasonably be bypassed.
+
+### 🟡 NEEDS REVIEW
+
+Protection may exist through another system, but the enforcement path needs clarification.
+
+### 🔴 UNPROTECTED
+
+A normal user could potentially execute the command or reach the underlying action without the required authorization.
+
+Do NOT fix anything. Only report.
+
+---
+
+# 11. AI READINESS
+
+At the end, give an overall assessment:
+
+```text
+AI COMMAND SYSTEM READINESS:
+
+SAFE TO PROCEED
+or
+NEEDS SECURITY FIXES FIRST
+```
+
+Explain exactly why.
+
+If it is not safe to proceed, identify the specific commands or AI tools that need to be fixed first.
+
+---
+
+# 12. RECOMMENDED ARCHITECTURE
+
+Without modifying anything, explain what the safest architecture would be for eventually allowing natural-language AI commands.
+
+The desired architecture is:
+
+```text
+User
+ ↓
+Natural Language
+ ↓
+AI Intent Detection
+ ↓
+Approved UCE Action
+ ↓
+USER AUTHORIZATION CHECK
+ ↓
+Existing UCE Handler
+ ↓
+BOT PERMISSION CHECK
+ ↓
+Validation
+ ↓
+Discord
+```
+
+The AI must never be able to bypass user authorization.
+
+---
+
+# 13. FINAL REPORT
+
+Return a concise but complete report containing:
+
+1. Total number of commands found
+2. Server-management commands found
+3. Commands confirmed protected
+4. Commands needing review
+5. Commands confirmed unprotected
+6. Existing global permission system
+7. Existing AI tools capable of actions
+8. Potential AI permission bypasses
+9. Destructive actions discovered
+10. Overall AI-readiness status
+11. Recommended fixes, WITHOUT APPLYING THEM
+
+## FINAL RULE
+
+Again:
+
+**DO NOT MODIFY ANY CODE.**
+
+This is an audit only.
+
+Do not "fix" anything you discover.
+
+Do not make assumptions.
+
+Report what the code actually does.

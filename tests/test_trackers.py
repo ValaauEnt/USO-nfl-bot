@@ -1031,3 +1031,144 @@ def test_tracker_messages_db_roundtrip():
             assert _settings.get_all_tracker_messages() == []
         finally:
             _settings.DB_PATH = orig
+
+
+# ---------------------------------------------------------------------------
+# 13. /trackers slash command
+# ---------------------------------------------------------------------------
+
+def _mk_admin_interaction(guild_id=1, user_id=99):
+    """Return a mock interaction with Administrator permission."""
+    inter = MagicMock()
+    inter.guild = MagicMock()
+    inter.guild.id = guild_id
+    inter.guild.name = "Test Server"
+    inter.user.guild_permissions.administrator = True
+    inter.user.guild_permissions.manage_guild = False
+    inter.response.defer = AsyncMock()
+    inter.followup.send = AsyncMock()
+    return inter
+
+
+def test_trackers_cmd_lists_full_uuid():
+    """Listing shows the complete tracker_id so admins can copy-paste it."""
+    async def run():
+        s = m.TrackerState(tracker_id="abcdef1234567890abcdef1234567890",
+                           game_id="g1", channel_id=111, guild_id=1, owner_id=42)
+        m._LIVE_TRACKERS[s.tracker_id] = s
+        inter = _mk_admin_interaction(guild_id=1)
+        await m.trackers_cmd.callback(inter, tracker_id=None)
+        embed = inter.followup.send.await_args.kwargs["embed"]
+        assert "abcdef1234567890abcdef1234567890" in embed.description
+
+    asyncio.run(run())
+
+
+def test_trackers_cmd_empty_guild():
+    """Returns a 'no active trackers' message when the guild has none."""
+    async def run():
+        inter = _mk_admin_interaction(guild_id=1)
+        await m.trackers_cmd.callback(inter, tracker_id=None)
+        msg = inter.followup.send.await_args.args[0]
+        assert "no active trackers" in msg.lower()
+
+    asyncio.run(run())
+
+
+def test_trackers_cmd_stop_by_full_id():
+    """Force-stopping by the full tracker UUID removes it from the registry."""
+    async def run():
+        full_id = "abcdef1234567890abcdef1234567890"
+        s = m.TrackerState(tracker_id=full_id, game_id="g1",
+                           channel_id=111, guild_id=1, owner_id=42)
+        m._LIVE_TRACKERS[full_id] = s
+        inter = _mk_admin_interaction(guild_id=1)
+        with patch.object(m, "delete_tracker_message"):
+            await m.trackers_cmd.callback(inter, tracker_id=full_id)
+        assert full_id not in m._LIVE_TRACKERS
+        assert s.active is False
+        msg = inter.followup.send.await_args.args[0]
+        assert "stopped" in msg.lower()
+
+    asyncio.run(run())
+
+
+def test_trackers_cmd_stop_by_prefix():
+    """Force-stopping by an unambiguous 8-char prefix resolves to the correct tracker."""
+    async def run():
+        full_id = "abcdef1234567890abcdef1234567890"
+        s = m.TrackerState(tracker_id=full_id, game_id="g1",
+                           channel_id=111, guild_id=1, owner_id=42)
+        m._LIVE_TRACKERS[full_id] = s
+        inter = _mk_admin_interaction(guild_id=1)
+        with patch.object(m, "delete_tracker_message"):
+            await m.trackers_cmd.callback(inter, tracker_id="abcdef12")
+        assert full_id not in m._LIVE_TRACKERS
+        assert s.active is False
+
+    asyncio.run(run())
+
+
+def test_trackers_cmd_stop_ambiguous_prefix():
+    """Ambiguous prefix (matches two trackers) returns an error, no tracker stopped."""
+    async def run():
+        id_a = "aaaa111100000000aaaa111100000000"
+        id_b = "aaaa222200000000aaaa222200000000"
+        for tid in (id_a, id_b):
+            m._LIVE_TRACKERS[tid] = m.TrackerState(
+                tracker_id=tid, game_id="g1", channel_id=111, guild_id=1, owner_id=42
+            )
+        inter = _mk_admin_interaction(guild_id=1)
+        await m.trackers_cmd.callback(inter, tracker_id="aaaa")
+        # Both trackers must still be active
+        assert id_a in m._LIVE_TRACKERS
+        assert id_b in m._LIVE_TRACKERS
+        msg = inter.followup.send.await_args.args[0]
+        assert "multiple" in msg.lower() or "ambiguous" in msg.lower() or "longer" in msg.lower()
+
+    asyncio.run(run())
+
+
+def test_trackers_cmd_stop_not_found():
+    """Passing an ID that doesn't exist on the guild returns an error."""
+    async def run():
+        inter = _mk_admin_interaction(guild_id=1)
+        await m.trackers_cmd.callback(inter, tracker_id="doesnotexist")
+        msg = inter.followup.send.await_args.args[0]
+        assert "no active tracker" in msg.lower() or "not found" in msg.lower()
+
+    asyncio.run(run())
+
+
+def test_trackers_cmd_cross_guild_rejection():
+    """A tracker belonging to guild 2 cannot be stopped by an admin in guild 1."""
+    async def run():
+        full_id = "cccc1234567890abcccc1234567890ab"
+        s = m.TrackerState(tracker_id=full_id, game_id="g1",
+                           channel_id=111, guild_id=2, owner_id=42)
+        m._LIVE_TRACKERS[full_id] = s
+        inter = _mk_admin_interaction(guild_id=1)  # different guild
+        await m.trackers_cmd.callback(inter, tracker_id=full_id)
+        # Tracker must still be alive
+        assert full_id in m._LIVE_TRACKERS
+        assert s.active is True
+
+    asyncio.run(run())
+
+
+def test_trackers_cmd_non_admin_rejected():
+    """A user without admin/manage_guild is denied immediately."""
+    async def run():
+        inter = MagicMock()
+        inter.guild = MagicMock()
+        inter.guild.id = 1
+        inter.guild.name = "Test Server"
+        inter.user.guild_permissions.administrator = False
+        inter.user.guild_permissions.manage_guild = False
+        inter.response.defer = AsyncMock()
+        inter.followup.send = AsyncMock()
+        await m.trackers_cmd.callback(inter, tracker_id=None)
+        msg = inter.followup.send.await_args.args[0]
+        assert "permission" in msg.lower()
+
+    asyncio.run(run())

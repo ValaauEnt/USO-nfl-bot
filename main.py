@@ -73,6 +73,7 @@ class TrackerState:
     active: bool = True
     concluded_game_ids: set = field(default_factory=set)
     task: asyncio.Task | None = None
+    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 _LIVE_TRACKERS: dict[str, TrackerState] = {}
@@ -3627,6 +3628,85 @@ async def leagueleaders(interaction: discord.Interaction):
     view = LeagueLeadersView(data)
     await interaction.followup.send(embed=view.build_embed(), view=view)
 
+
+
+@bot.tree.command(name="trackers", description="List active game trackers for this server, or force-stop one [Admin only]")
+@app_commands.describe(tracker_id="Tracker ID to force-stop (leave blank to just list active trackers)")
+async def trackers_cmd(interaction: discord.Interaction, tracker_id: str | None = None):
+    await interaction.response.defer(ephemeral=True)
+    if not interaction.guild:
+        return await interaction.followup.send("This command only works inside a server.", ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send(
+            "You need **Administrator** or **Manage Server** permission to use this command.",
+            ephemeral=True,
+        )
+    guild_id = interaction.guild.id
+
+    # ── Force-stop a specific tracker ────────────────────────────────────────
+    if tracker_id is not None:
+        prefix = tracker_id.strip()
+        # Resolve prefix against this guild's trackers (exact match first, then prefix)
+        guild_states = [s for s in _LIVE_TRACKERS.values() if s.guild_id == guild_id]
+        exact = _LIVE_TRACKERS.get(prefix)
+        if exact is not None and exact.guild_id == guild_id:
+            matched = [exact]
+        else:
+            matched = [s for s in guild_states if s.tracker_id.startswith(prefix)]
+        if not matched:
+            return await interaction.followup.send(
+                f"❌ No active tracker matching `{prefix}` found on this server.",
+                ephemeral=True,
+            )
+        if len(matched) > 1:
+            ids = ", ".join(f"`{s.tracker_id}`" for s in matched)
+            return await interaction.followup.send(
+                f"⚠️ `{prefix}` matches multiple trackers — use a longer prefix or the full ID.\n{ids}",
+                ephemeral=True,
+            )
+        state = matched[0]
+        full_id = state.tracker_id
+        channel_mention = f"<#{state.channel_id}>"
+        _stop_tracker(full_id)
+        return await interaction.followup.send(
+            f"🛑 Tracker `{full_id}` in {channel_mention} has been stopped.",
+            ephemeral=True,
+        )
+
+    # ── List active trackers ──────────────────────────────────────────────────
+    guild_trackers = [s for s in _LIVE_TRACKERS.values() if s.guild_id == guild_id]
+    if not guild_trackers:
+        return await interaction.followup.send(
+            "📭 No active trackers on this server right now.",
+            ephemeral=True,
+        )
+
+    now = datetime.now(timezone.utc)
+    lines: list[str] = []
+    for s in guild_trackers:
+        age_secs = int((now - s.started_at).total_seconds())
+        if age_secs < 60:
+            age_str = f"{age_secs}s"
+        elif age_secs < 3600:
+            age_str = f"{age_secs // 60}m"
+        else:
+            hours = age_secs // 3600
+            mins  = (age_secs % 3600) // 60
+            age_str = f"{hours}h {mins}m"
+        game_label = "All games" if s.game_id is None else f"Game `{s.game_id}`"
+        lines.append(
+            f"• `{s.tracker_id}`  |  {game_label}  |  "
+            f"<#{s.channel_id}>  |  <@{s.owner_id}>  |  age: {age_str}"
+        )
+
+    embed = discord.Embed(
+        title=f"📡 Active Trackers — {interaction.guild.name}",
+        description="\n".join(lines),
+        colour=discord.Colour.blurple(),
+    )
+    embed.set_footer(text=f"Copy any ID above and pass it to /trackers tracker_id:<ID> to force-stop  •  {len(guild_trackers)}/{_MAX_TRACKERS_PER_GUILD} slots used")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="create-channel", description="Create a new text or voice channel [Admin only]")

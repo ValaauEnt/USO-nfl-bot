@@ -631,6 +631,189 @@ def test_tracker_allowed_when_below_cap():
 
 
 # ---------------------------------------------------------------------------
+# 9b. Per-user cap
+# ---------------------------------------------------------------------------
+
+def test_user_tracker_count_empty():
+    assert m._user_tracker_count(1, 42) == 0
+
+
+def test_user_tracker_count_isolates_by_user():
+    """Only counts trackers owned by the specified user in the specified guild."""
+    m._LIVE_TRACKERS["u1"] = m.TrackerState(
+        tracker_id="u1", game_id="g1", channel_id=10, guild_id=1, owner_id=42
+    )
+    m._LIVE_TRACKERS["u2"] = m.TrackerState(
+        tracker_id="u2", game_id="g2", channel_id=11, guild_id=1, owner_id=42
+    )
+    m._LIVE_TRACKERS["u3"] = m.TrackerState(
+        tracker_id="u3", game_id="g3", channel_id=12, guild_id=1, owner_id=99  # different user
+    )
+    m._LIVE_TRACKERS["u4"] = m.TrackerState(
+        tracker_id="u4", game_id="g4", channel_id=13, guild_id=2, owner_id=42  # different guild
+    )
+    assert m._user_tracker_count(1, 42) == 2
+    assert m._user_tracker_count(1, 99) == 1
+    assert m._user_tracker_count(2, 42) == 1
+    assert m._user_tracker_count(1, 7) == 0
+
+
+def test_user_tracker_count_none_guild():
+    assert m._user_tracker_count(None, 42) == 0
+
+
+def test_single_tracker_blocked_at_user_cap():
+    """User who already owns _MAX_TRACKERS_PER_USER trackers is rejected with a user-specific error."""
+    async def run():
+        user_id = 200
+        # Fill up just this user's quota (not the guild cap)
+        for i in range(m._MAX_TRACKERS_PER_USER):
+            s = m.TrackerState(
+                tracker_id=f"user-{i}", game_id=f"gy{i}",
+                channel_id=400 + i, guild_id=1, owner_id=user_id,
+            )
+            m._LIVE_TRACKERS[f"user-{i}"] = s
+
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("gnew")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(499)
+        inter = _mk_click_interaction_with_guild(user_id=user_id, channel=channel, guild_id=1)
+        inter.data = {"values": ["gnew"]}
+
+        with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+             patch.object(m.asyncio, "create_task", lambda coro: (coro.close(), MagicMock())[1]):
+            await view._on_live_game_select(inter)
+
+        # No new tracker added
+        guild_trackers = [s for s in m._LIVE_TRACKERS.values() if s.guild_id == 1]
+        assert len(guild_trackers) == m._MAX_TRACKERS_PER_USER
+        inter.followup.send.assert_awaited_once()
+        msg = inter.followup.send.await_args.args[0]
+        # Message should mention the per-user limit, not the guild cap
+        assert "you" in msg.lower() or "per user" in msg.lower() or "your" in msg.lower()
+        assert "maximum" in msg.lower() or "active trackers" in msg.lower()
+    asyncio.run(run())
+
+
+def test_all_games_tracker_blocked_at_user_cap():
+    """Track-All button is rejected with a user-specific error when the user hits their personal cap."""
+    async def run():
+        user_id = 300
+        for i in range(m._MAX_TRACKERS_PER_USER):
+            s = m.TrackerState(
+                tracker_id=f"uall-{i}", game_id=f"gz{i}",
+                channel_id=500 + i, guild_id=1, owner_id=user_id,
+            )
+            m._LIVE_TRACKERS[f"uall-{i}"] = s
+
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(599)
+        inter = _mk_click_interaction_with_guild(user_id=user_id, channel=channel, guild_id=1)
+
+        with patch.object(m, "get_scoreboard_data", AsyncMock(return_value=([_live_game("g1")], meta))), \
+             patch.object(m.asyncio, "create_task", lambda coro: (coro.close(), MagicMock())[1]):
+            await view._track_all_live_games(inter)
+
+        guild_trackers = [s for s in m._LIVE_TRACKERS.values() if s.guild_id == 1]
+        assert len(guild_trackers) == m._MAX_TRACKERS_PER_USER
+        inter.followup.send.assert_awaited_once()
+        msg = inter.followup.send.await_args.args[0]
+        assert "you" in msg.lower() or "per user" in msg.lower() or "your" in msg.lower()
+        assert "maximum" in msg.lower() or "active trackers" in msg.lower()
+    asyncio.run(run())
+
+
+def test_user_cap_error_distinguishable_from_guild_cap_error():
+    """The per-user error message is distinct from the guild-cap error message."""
+    async def _get_user_msg():
+        user_id = 200
+        for i in range(m._MAX_TRACKERS_PER_USER):
+            s = m.TrackerState(
+                tracker_id=f"uerr-{i}", game_id=f"ge{i}",
+                channel_id=600 + i, guild_id=1, owner_id=user_id,
+            )
+            m._LIVE_TRACKERS[f"uerr-{i}"] = s
+
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("gnew2")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(699)
+        inter = _mk_click_interaction_with_guild(user_id=user_id, channel=channel, guild_id=1)
+        inter.data = {"values": ["gnew2"]}
+
+        with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+             patch.object(m.asyncio, "create_task", lambda coro: (coro.close(), MagicMock())[1]):
+            await view._on_live_game_select(inter)
+        return inter.followup.send.await_args.args[0]
+
+    async def _get_guild_msg():
+        for i in range(m._MAX_TRACKERS_PER_GUILD):
+            s = m.TrackerState(
+                tracker_id=f"gerr-{i}", game_id=f"gf{i}",
+                channel_id=700 + i, guild_id=1, owner_id=1,  # different owners
+            )
+            m._LIVE_TRACKERS[f"gerr-{i}"] = s
+
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("gnew3")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(799)
+        inter = _mk_click_interaction_with_guild(user_id=999, channel=channel, guild_id=1)
+        inter.data = {"values": ["gnew3"]}
+
+        with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+             patch.object(m.asyncio, "create_task", lambda coro: (coro.close(), MagicMock())[1]):
+            await view._on_live_game_select(inter)
+        return inter.followup.send.await_args.args[0]
+
+    async def run():
+        user_msg = await _get_user_msg()
+        m._LIVE_TRACKERS.clear()
+        guild_msg = await _get_guild_msg()
+        # User-cap message should say something about "you" (personal)
+        assert "you" in user_msg.lower() or "per user" in user_msg.lower() or "your" in user_msg.lower()
+        # Guild-cap message should say something about "server" (global)
+        assert "server" in guild_msg.lower()
+        # They should be different messages
+        assert user_msg != guild_msg
+
+    asyncio.run(run())
+
+
+def test_different_users_can_each_reach_their_own_cap():
+    """Two different users can independently reach the per-user cap without blocking each other."""
+    async def run():
+        user_a, user_b = 201, 202
+        # Both users each own (cap - 1) trackers
+        for uid in (user_a, user_b):
+            for i in range(m._MAX_TRACKERS_PER_USER - 1):
+                s = m.TrackerState(
+                    tracker_id=f"dual-{uid}-{i}", game_id=f"gd{uid}{i}",
+                    channel_id=uid * 100 + i, guild_id=1, owner_id=uid,
+                )
+                m._LIVE_TRACKERS[f"dual-{uid}-{i}"] = s
+
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+
+        # user_a starts a tracker — should succeed (they're still below cap)
+        view_a = m.ScoreboardView([_live_game("ga1")], meta, dest_channel_id=None, owner_id=100)
+        channel_a = _make_channel(20100)
+        inter_a = _mk_click_interaction_with_guild(user_id=user_a, channel=channel_a, guild_id=1)
+        inter_a.data = {"values": ["ga1"]}
+
+        with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+             patch.object(m.asyncio, "create_task", lambda coro: (coro.close(), MagicMock())[1]):
+            await view_a._on_live_game_select(inter_a)
+
+        a_trackers = [s for s in m._LIVE_TRACKERS.values() if s.guild_id == 1 and s.owner_id == user_a]
+        assert len(a_trackers) == m._MAX_TRACKERS_PER_USER, "user_a should now be at their cap"
+        # Success: followup was called with a tracking confirmation (not an error)
+        msg_a = inter_a.followup.send.await_args.args[0]
+        assert "now tracking" in msg_a.lower() or "📡" in msg_a
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
 # 10. Concurrent race-condition tests (atomic reservation)
 # ---------------------------------------------------------------------------
 

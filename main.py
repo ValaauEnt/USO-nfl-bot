@@ -81,6 +81,9 @@ _LIVE_TRACKERS: dict[str, TrackerState] = {}
 # Maximum number of active trackers allowed per guild at any one time.
 _MAX_TRACKERS_PER_GUILD: int = 5
 
+# Maximum number of active trackers a single user may hold in one guild.
+_MAX_TRACKERS_PER_USER: int = 2
+
 # Set to True the first time on_ready completes startup cleanup so that
 # gateway reconnects (which re-fire on_ready) never re-run the cleanup
 # against live in-process trackers.
@@ -92,6 +95,16 @@ def _guild_tracker_count(guild_id: int | None) -> int:
     if guild_id is None:
         return 0
     return sum(1 for s in _LIVE_TRACKERS.values() if s.guild_id == guild_id)
+
+
+def _user_tracker_count(guild_id: int | None, user_id: int) -> int:
+    """Return the number of active trackers owned by *user_id* in *guild_id*."""
+    if guild_id is None:
+        return 0
+    return sum(
+        1 for s in _LIVE_TRACKERS.values()
+        if s.guild_id == guild_id and s.owner_id == user_id
+    )
 
 
 def _find_duplicate_tracker(guild_id: int | None, channel_id: int, game_id: str | None) -> TrackerState | None:
@@ -2193,6 +2206,15 @@ class ScoreboardView(discord.ui.View):
             )
             return
 
+        # Per-user cap (checked before guild cap to give a clearer message)
+        if _user_tracker_count(guild_id, interaction.user.id) >= _MAX_TRACKERS_PER_USER:
+            await interaction.followup.send(
+                f"⚠️ You already have **{_MAX_TRACKERS_PER_USER} active trackers** in this server — "
+                "the maximum per user. End one of your trackers before starting a new one.",
+                ephemeral=True,
+            )
+            return
+
         # Per-guild cap
         if _guild_tracker_count(guild_id) >= _MAX_TRACKERS_PER_GUILD:
             await interaction.followup.send(
@@ -2265,6 +2287,15 @@ class ScoreboardView(discord.ui.View):
             await interaction.followup.send(
                 "⚠️ An all-games tracker is already running in this channel. "
                 "Use the **🛑 End Tracking** button on the existing tracker first.",
+                ephemeral=True,
+            )
+            return
+
+        # Per-user cap (checked before guild cap to give a clearer message)
+        if _user_tracker_count(guild_id, interaction.user.id) >= _MAX_TRACKERS_PER_USER:
+            await interaction.followup.send(
+                f"⚠️ You already have **{_MAX_TRACKERS_PER_USER} active trackers** in this server — "
+                "the maximum per user. End one of your trackers before starting a new one.",
                 ephemeral=True,
             )
             return

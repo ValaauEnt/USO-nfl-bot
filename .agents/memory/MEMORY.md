@@ -1,0 +1,3 @@
+- [UCE scoreboard views](uce-scoreboard-views.md) — ScoreboardView uses dynamic _rebuild(); _TeamGameView and LiveGameView reference each other, safe as forward refs in Python
+- [UCE AI tool auth pattern](uce-ai-tool-auth.md) — all AI action tools must re-check _ctx_author.guild_permissions independently; never rely on slash-cmd auth
+- [UCE gamelog season labels](uce-gamelog-season-labels.md) — extract_stats_from_gamelog now tags season_label on every entry; deduplicate by eventId across categories

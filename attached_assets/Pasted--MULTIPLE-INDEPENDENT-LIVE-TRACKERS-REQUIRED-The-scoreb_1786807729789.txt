@@ -1,0 +1,350 @@
+# MULTIPLE INDEPENDENT LIVE TRACKERS — REQUIRED
+
+The scoreboard must support multiple independent live trackers running simultaneously.
+
+## 1. SELECT A SPECIFIC GAME TO TRACK
+
+When `/scoreboard` is opened and live games exist, provide a Live Game dropdown.
+
+Example:
+
+🏈 LIVE GAMES
+
+[ Select a game ▼ ]
+
+Options:
+• Dolphins vs Bills
+• Chiefs vs Ravens
+• Cowboys vs Eagles
+
+When the user selects a specific game:
+
+→ Open a dedicated LiveGameView for that game.
+→ Begin automatic tracking.
+→ Update it every 5 minutes while the game is LIVE.
+
+The user must NOT have to press Refresh to keep it updated.
+
+---
+
+# 2. ALL GAMES MODE
+
+If the user does NOT select an individual game, the default scoreboard should show all available games.
+
+When multiple games are LIVE, show all live games together.
+
+Example:
+
+🏈 NFL LIVE SCOREBOARD
+
+🔴 Dolphins 17 — Bills 14
+3rd • 08:42
+
+🔴 Chiefs 21 — Ravens 17
+4th • 02:15
+
+🔴 Cowboys 7 — Eagles 10
+2nd • 04:33
+
+The user can then choose one of those games from the Live Game dropdown to create a dedicated tracker.
+
+---
+
+# 3. CREATE MULTIPLE TRACKERS
+
+Users must be able to create multiple independent trackers at the same time.
+
+Example:
+
+Tracker #1:
+#live-scores
+Dolphins vs Bills
+
+Tracker #2:
+#chiefs
+Chiefs vs Ravens
+
+Tracker #3:
+#league-news
+All Live Games
+
+These trackers must operate independently.
+
+Closing Tracker #1 must NOT affect Tracker #2 or Tracker #3.
+
+A game finishing in Tracker #1 must NOT stop tracking another game in Tracker #2.
+
+---
+
+# 4. TRACKER MESSAGE
+
+Each tracker should have its own Discord message.
+
+The tracker message should contain:
+
+- Teams
+- Current score
+- Game status
+- Quarter/period
+- Game clock
+- Available live information
+- Last update information if useful
+
+Example:
+
+🏈 LIVE GAME TRACKER
+
+Miami Dolphins
+17
+
+Buffalo Bills
+14
+
+🔴 3rd Quarter — 08:42
+
+Next update automatically in approximately 5 minutes.
+
+---
+
+# 5. AUTOMATIC FIVE-MINUTE UPDATES
+
+Every active live tracker automatically checks its game every 5 minutes.
+
+The user does NOT need to press Refresh.
+
+The existing Refresh button may remain, but it should mean:
+
+"Update this tracker immediately."
+
+It must NOT be required for normal tracking.
+
+---
+
+# 6. STOP TRACKING BUTTON
+
+Every individual live tracker must have a clearly visible button:
+
+`🛑 End Tracking`
+
+or:
+
+`✖ Close Tracker`
+
+When the tracker owner presses it:
+
+1. Stop the automatic polling task for that tracker.
+2. Remove the tracker from active tracking state.
+3. Disable the tracker's interactive controls.
+4. Leave the current scoreboard visible.
+5. Do NOT affect any other tracker.
+6. Do NOT stop tracking the same game in another independent tracker.
+
+Example:
+
+Tracker A:
+Dolphins vs Bills → CLOSED
+
+Tracker B:
+Chiefs vs Ravens → STILL TRACKING
+
+Tracker C:
+All Live Games → STILL TRACKING
+
+---
+
+# 7. GAME CONCLUSION
+
+When the NFL data source reports that a tracked game is FINAL:
+
+1. Perform one final data update.
+2. Display the final score.
+3. Change the status to:
+
+🏁 FINAL
+
+4. Stop polling that specific game.
+5. Do NOT make any more requests for that concluded game.
+6. Leave the final scoreboard visible.
+7. Disable live-only controls where appropriate.
+
+Do NOT continue polling a game after it has concluded.
+
+---
+
+# 8. ALL-LIVE-GAMES TRACKER
+
+If the user chooses to track ALL live games instead of an individual game:
+
+The tracker should check the live scoreboard every 5 minutes.
+
+For each update:
+
+- Add newly live games if applicable.
+- Update currently live games.
+- Remove concluded games from the active polling set.
+- Do not poll concluded games again.
+
+Example:
+
+Initial:
+
+Dolphins vs Bills — LIVE
+Chiefs vs Ravens — LIVE
+Cowboys vs Eagles — LIVE
+
+Five minutes later:
+
+Dolphins vs Bills — LIVE
+Chiefs vs Ravens — FINAL
+Cowboys vs Eagles — LIVE
+
+The tracker should continue checking:
+
+Dolphins vs Bills
+Cowboys vs Eagles
+
+It should STOP checking:
+
+Chiefs vs Ravens
+
+---
+
+# 9. MULTIPLE TRACKERS IN THE SAME CHANNEL
+
+Multiple trackers may exist in the same Discord channel if the user chooses to create them.
+
+Each tracker must have its own:
+
+- message ID
+- tracker ID
+- game/event ID
+- refresh task
+- active/inactive state
+- owner
+- channel ID
+- guild ID
+
+Never use one global tracker state that causes one scoreboard to overwrite another.
+
+---
+
+# 10. CHANNEL SELECTION
+
+Allow `/scoreboard` to optionally specify a destination channel if the current command architecture supports it safely.
+
+Example:
+
+/scoreboard channel:#live-scores
+
+Then UCE posts that scoreboard/tracker into #live-scores.
+
+If no channel is selected:
+
+Post it in the channel where `/scoreboard` was executed.
+
+The bot must verify it has the required Discord permissions in the selected channel.
+
+---
+
+# 11. TRACKER OWNERSHIP
+
+The user who creates a tracker should be able to end their own tracker.
+
+Server administrators should also be able to end trackers if appropriate.
+
+A normal user must not be able to use another user's tracker controls to perform unauthorized actions.
+
+Do not create a new role system.
+
+Use the existing UCE permission model where applicable.
+
+---
+
+# 12. VIEW TIMEOUT
+
+Do NOT allow Discord's default 300-second View timeout to kill an active live tracker.
+
+The live tracker lifecycle must be independent from the Discord UI timeout.
+
+The tracker remains active while the game is LIVE.
+
+The five-minute interval is the DATA REFRESH interval, not a Discord View expiration.
+
+If Discord requires a View lifecycle mechanism, implement it so the tracker continues functioning while the game remains live.
+
+---
+
+# 13. CLEANUP
+
+When a tracker is:
+
+- manually closed
+- associated game becomes FINAL
+- associated message is deleted
+
+clean up its background polling task.
+
+Do not leave orphaned async tasks running.
+
+Do not continue polling inactive or concluded games.
+
+---
+
+# 14. TESTING
+
+Add tests verifying:
+
+### Individual game
+
+- Select a specific live game.
+- Tracker starts.
+- Tracker automatically updates every 5 minutes.
+- No manual Refresh required.
+- Tracker stops when game becomes FINAL.
+- Final score remains visible.
+
+### End Tracking
+
+- User presses End Tracking.
+- Polling stops.
+- Tracker state is removed.
+- Message remains visible.
+- Other trackers continue operating.
+
+### Multiple trackers
+
+Create:
+
+Tracker A → Game 1
+Tracker B → Game 2
+Tracker C → All Live Games
+
+Verify they all operate independently.
+
+Close Tracker A.
+
+Verify B and C continue.
+
+Finish Game 2.
+
+Verify B stops polling while C continues tracking other live games.
+
+### All Games
+
+Verify the default scoreboard displays all available/live games without requiring individual game selection.
+
+### Five-minute polling
+
+Verify the tracker uses automatic five-minute updates.
+
+Do NOT require the Refresh button for normal operation.
+
+### Cleanup
+
+Verify no polling continues after:
+
+- game concludes
+- tracker is manually closed
+- tracker message is deleted
+
+Do not claim end-to-end live-game functionality is verified until actual NFL games are live.

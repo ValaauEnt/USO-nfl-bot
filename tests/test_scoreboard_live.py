@@ -105,7 +105,7 @@ def test_rebuild_adds_live_select_when_game_in_progress():
     selects = [c for c in view.children if isinstance(c, discord.ui.Select)]
     live_selects = [s for s in selects if s.row == 3]
     assert live_selects, "Expected a row-3 live-game Select when games are in_progress"
-    assert live_selects[0].placeholder == "🔴 View a live game…"
+    assert live_selects[0].placeholder == "🔴 Track a live game…"
 
 
 # ---------------------------------------------------------------------------

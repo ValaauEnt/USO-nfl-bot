@@ -2,8 +2,10 @@ import os
 import re
 import html
 import time
+import uuid
 import random
 import asyncio
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -49,6 +51,37 @@ _ctx_action_count  = contextvars.ContextVar("action_count",    default=0)
 
 # Maximum approved Discord server-management actions the AI may execute per request
 _MAX_AI_ACTIONS: int = 5
+
+# ── Live game tracker registry ────────────────────────────────────────────────
+
+_TRACKER_POLL_INTERVAL: int = 300  # seconds between automatic tracker updates
+
+
+@dataclass
+class TrackerState:
+    """State for one independent live-game tracker (single game or all games)."""
+    tracker_id: str
+    game_id: str | None            # None → all-games tracker
+    channel_id: int
+    guild_id: int | None
+    owner_id: int
+    message_id: int | None = None
+    active: bool = True
+    concluded_game_ids: set = field(default_factory=set)
+    task: asyncio.Task | None = None
+
+
+_LIVE_TRACKERS: dict[str, TrackerState] = {}
+
+
+def _stop_tracker(tracker_id: str) -> None:
+    """Remove a tracker from the registry, mark inactive, and cancel its task."""
+    state = _LIVE_TRACKERS.pop(tracker_id, None)
+    if state is None:
+        return
+    state.active = False
+    if state.task is not None and not state.task.done():
+        state.task.cancel()
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("uso")
@@ -1949,10 +1982,13 @@ class SeasonStatsView(discord.ui.View):
 class ScoreboardView(discord.ui.View):
     """Week-by-week scoreboard with Prev/Next, season toggles, Refresh, team filter, and live-game selector."""
 
-    def __init__(self, games: list[dict], meta: dict):
+    def __init__(self, games: list[dict], meta: dict,
+                 dest_channel_id: int | None = None, owner_id: int | None = None):
         super().__init__(timeout=300)
         self.games = games
         self.meta = meta
+        self.dest_channel_id = dest_channel_id
+        self.owner_id = owner_id
         self._rebuild()
 
     # ── Dynamic item builder ──────────────────────────────────────────────────
@@ -2030,12 +2066,19 @@ class ScoreboardView(discord.ui.View):
                     description=desc,
                 ))
             live_sel = discord.ui.Select(
-                placeholder="🔴 View a live game…",
+                placeholder="🔴 Track a live game…",
                 options=live_options,
                 row=3,
             )
             live_sel.callback = self._on_live_game_select
             self.add_item(live_sel)
+
+            # Row 4 — track-all button (only when live games exist)
+            track_all = discord.ui.Button(
+                label="📡 Track All Live Games", style=discord.ButtonStyle.success, row=4,
+            )
+            track_all.callback = self._track_all_live_games
+            self.add_item(track_all)
 
     # ── Core actions ──────────────────────────────────────────────────────────
 
@@ -2095,14 +2138,85 @@ class ScoreboardView(discord.ui.View):
         if not game:
             await interaction.response.defer()
             return
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        dest_channel = None
+        if self.dest_channel_id:
+            dest_channel = bot.get_channel(self.dest_channel_id)
+        if dest_channel is None:
+            dest_channel = interaction.channel
+
         try:
             summary = await get_game_summary(game_id)
         except Exception:
             summary = {}
-        await interaction.edit_original_response(
-            embed=build_live_game_embed(game, summary),
-            view=LiveGameView(game, self),
+
+        tracker_id = uuid.uuid4().hex
+        state = TrackerState(
+            tracker_id=tracker_id,
+            game_id=game_id,
+            channel_id=dest_channel.id,
+            guild_id=interaction.guild_id,
+            owner_id=interaction.user.id,
+        )
+        view  = LiveTrackerView(tracker_id)
+        embed = _build_tracker_embed(game, summary, _now_stamp(), final=_is_game_final(game))
+        try:
+            message = await dest_channel.send(embed=embed, view=view)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "🚩 I can't post in that channel — check my permissions.", ephemeral=True,
+            )
+            return
+        state.message_id = message.id
+        _LIVE_TRACKERS[tracker_id] = state
+        state.task = asyncio.create_task(_run_single_game_tracker(tracker_id))
+        await interaction.followup.send(
+            f"📡 Now tracking **{game.get('away_name', game['away_team'])} vs "
+            f"{game.get('home_name', game['home_team'])}** in {dest_channel.mention} — "
+            "updates every 5 minutes.",
+            ephemeral=True,
+        )
+
+    # ── Track all live games ──────────────────────────────────────────────────
+
+    async def _track_all_live_games(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
+        dest_channel = None
+        if self.dest_channel_id:
+            dest_channel = bot.get_channel(self.dest_channel_id)
+        if dest_channel is None:
+            dest_channel = interaction.channel
+
+        try:
+            games, _ = await get_scoreboard_data()
+        except Exception:
+            games = self.games
+
+        tracker_id = uuid.uuid4().hex
+        state = TrackerState(
+            tracker_id=tracker_id,
+            game_id=None,
+            channel_id=dest_channel.id,
+            guild_id=interaction.guild_id,
+            owner_id=interaction.user.id,
+        )
+        view  = AllGamesTrackerView(tracker_id)
+        embed = _build_all_games_tracker_embed(games, _now_stamp())
+        try:
+            message = await dest_channel.send(embed=embed, view=view)
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "🚩 I can't post in that channel — check my permissions.", ephemeral=True,
+            )
+            return
+        state.message_id = message.id
+        _LIVE_TRACKERS[tracker_id] = state
+        state.task = asyncio.create_task(_run_all_games_tracker(tracker_id))
+        await interaction.followup.send(
+            f"📡 Now tracking **all live games** in {dest_channel.mention} — updates every 5 minutes.",
+            ephemeral=True,
         )
 
 
@@ -2134,6 +2248,302 @@ class _TeamGameView(discord.ui.View):
     async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.parent._rebuild()
         await interaction.response.edit_message(embed=self.parent.build_embed(), view=self.parent)
+
+
+# ── Live tracker helpers ──────────────────────────────────────────────────────
+
+def _is_game_final(game: dict) -> bool:
+    """True when the game has concluded."""
+    return bool(game.get("completed")) and not game.get("in_progress")
+
+
+def _build_tracker_embed(game: dict, summary: dict, last_update: str, final: bool = False) -> discord.Embed:
+    """Embed for a single-game auto-tracker message."""
+    away    = game.get("away_name", game.get("away_team", "Away"))
+    home    = game.get("home_name", game.get("home_team", "Home"))
+    a_score = game.get("away_score", "0")
+    h_score = game.get("home_score", "0")
+    state   = game.get("state", "")
+
+    if final:
+        status_line = "🏁 **FINAL**"
+    elif game.get("in_progress"):
+        status_line = f"🔴 **LIVE** — {state}" if state else "🔴 **LIVE**"
+    elif game.get("completed"):
+        status_line = "🏁 **FINAL**"
+    else:
+        status_line = f"🕐 {state}" if state else "🕐 Scheduled"
+
+    desc = f"**{away}** {a_score} — {h_score} **{home}**\n\n{status_line}"
+    if game.get("down_distance") and game.get("in_progress") and not final:
+        desc += f"\n{game['down_distance']}"
+
+    embed = discord.Embed(
+        title=f"📡 Live Tracker: {away} vs {home}",
+        description=desc,
+        color=0x7A5C2E if final else 0xD62828,
+    )
+
+    for group in (summary or {}).get("leaders", [])[:4]:
+        leader_list = group.get("leaders", [])
+        if not leader_list:
+            continue
+        leader  = leader_list[0]
+        athlete = leader.get("athlete", {}).get("displayName", "Unknown")
+        value   = leader.get("displayValue", "")
+        name    = group.get("displayName") or group.get("name", "")
+        if name and value:
+            embed.add_field(name=name, value=f"**{athlete}** — {value}", inline=True)
+
+    if final:
+        embed.set_footer(text=f"🏁 Game over — tracking ended • Last update {last_update}")
+    else:
+        embed.set_footer(text=f"Auto-updates every 5 min • Last update {last_update}")
+    return embed
+
+
+def _build_all_games_tracker_embed(games: list[dict], last_update: str) -> discord.Embed:
+    """Embed for the all-games auto-tracker message."""
+    live      = [g for g in games if g.get("in_progress")]
+    finals    = [g for g in games if g.get("completed") and not g.get("in_progress")]
+    scheduled = [g for g in games if not g.get("in_progress") and not g.get("completed")]
+
+    lines: list[str] = []
+    for g in live:
+        lines.append(
+            f"🔴 **{g.get('away_team', '?')}** {g.get('away_score', '0')} — "
+            f"{g.get('home_score', '0')} **{g.get('home_team', '?')}** • {g.get('state', 'LIVE')}"
+        )
+    for g in finals:
+        lines.append(
+            f"✅ FINAL: **{g.get('away_team', '?')}** {g.get('away_score', '0')} — "
+            f"{g.get('home_score', '0')} **{g.get('home_team', '?')}**"
+        )
+    for g in scheduled:
+        lines.append(
+            f"🕐 {g.get('away_team', '?')} @ {g.get('home_team', '?')} • {g.get('state', 'Scheduled')}"
+        )
+    if not lines:
+        lines.append("No games found.")
+
+    all_done = bool(games) and not live and not scheduled
+    embed = discord.Embed(
+        title="📡 All Live Games Tracker",
+        description="\n".join(lines)[:4096],
+        color=0x7A5C2E if all_done else 0xD62828,
+    )
+    if all_done:
+        embed.set_footer(text=f"🏁 All games final — tracking ended • Last update {last_update}")
+    else:
+        embed.set_footer(text=f"Auto-updates every 5 min • Last update {last_update}")
+    return embed
+
+
+async def _fetch_tracker_data(state: TrackerState) -> tuple[dict | None, dict]:
+    """Fetch the tracked game (and summary) for a single-game tracker."""
+    games, _ = await get_scoreboard_data()
+    game = next((g for g in games if g["id"] == state.game_id), None)
+    summary: dict = {}
+    if game is not None:
+        try:
+            summary = await get_game_summary(state.game_id)
+        except Exception:
+            summary = {}
+    return game, summary
+
+
+def _now_stamp() -> str:
+    return datetime.now(ZoneInfo("US/Eastern")).strftime("%I:%M %p ET").lstrip("0")
+
+
+def _tracker_auth_ok(interaction: discord.Interaction, owner_id: int) -> bool:
+    """Only the tracker creator or an admin/manage-guild user may end tracking."""
+    if interaction.user.id == owner_id:
+        return True
+    perms = getattr(interaction.user, "guild_permissions", None)
+    return bool(perms and (perms.administrator or perms.manage_guild))
+
+
+class LiveTrackerView(discord.ui.View):
+    """Controls for a single-game auto-tracker message."""
+
+    def __init__(self, tracker_id: str):
+        super().__init__(timeout=None)
+        self.tracker_id = tracker_id
+
+    def _state(self) -> TrackerState | None:
+        return _LIVE_TRACKERS.get(self.tracker_id)
+
+    @discord.ui.button(label="🔄 Update Now", style=discord.ButtonStyle.primary)
+    async def update_now(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self._state()
+        if state is None or not state.active:
+            await interaction.response.send_message("This tracker has ended.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        game, summary = await _fetch_tracker_data(state)
+        if game is None:
+            await interaction.followup.send("Couldn't find that game right now.", ephemeral=True)
+            return
+        final = _is_game_final(game)
+        embed = _build_tracker_embed(game, summary, _now_stamp(), final=final)
+        if final:
+            _stop_tracker(self.tracker_id)
+            for item in self.children:
+                item.disabled = True
+        await interaction.edit_original_response(embed=embed, view=self)
+
+    @discord.ui.button(label="🛑 End Tracking", style=discord.ButtonStyle.danger)
+    async def end_tracking(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self._state()
+        owner_id = state.owner_id if state else 0
+        if state and not _tracker_auth_ok(interaction, owner_id):
+            await interaction.response.send_message(
+                "🚩 Flag on the play — only the tracker's creator or a server admin can end tracking.",
+                ephemeral=True,
+            )
+            return
+        _stop_tracker(self.tracker_id)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send("🛑 Tracking ended.", ephemeral=True)
+
+
+class AllGamesTrackerView(discord.ui.View):
+    """Controls for the all-games auto-tracker message."""
+
+    def __init__(self, tracker_id: str):
+        super().__init__(timeout=None)
+        self.tracker_id = tracker_id
+
+    def _state(self) -> TrackerState | None:
+        return _LIVE_TRACKERS.get(self.tracker_id)
+
+    @discord.ui.button(label="🔄 Update Now", style=discord.ButtonStyle.primary)
+    async def update_now(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self._state()
+        if state is None or not state.active:
+            await interaction.response.send_message("This tracker has ended.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        games, _ = await get_scoreboard_data()
+        embed = _build_all_games_tracker_embed(games, _now_stamp())
+        live_or_upcoming = [g for g in games if not _is_game_final(g)]
+        if games and not live_or_upcoming:
+            _stop_tracker(self.tracker_id)
+            for item in self.children:
+                item.disabled = True
+        await interaction.edit_original_response(embed=embed, view=self)
+
+    @discord.ui.button(label="🛑 End Tracking", style=discord.ButtonStyle.danger)
+    async def end_tracking(self, interaction: discord.Interaction, button: discord.ui.Button):
+        state = self._state()
+        owner_id = state.owner_id if state else 0
+        if state and not _tracker_auth_ok(interaction, owner_id):
+            await interaction.response.send_message(
+                "🚩 Flag on the play — only the tracker's creator or a server admin can end tracking.",
+                ephemeral=True,
+            )
+            return
+        _stop_tracker(self.tracker_id)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        await interaction.followup.send("🛑 Tracking ended.", ephemeral=True)
+
+
+async def _run_single_game_tracker(tracker_id: str) -> None:
+    """Background loop: update a single-game tracker every _TRACKER_POLL_INTERVAL seconds."""
+    try:
+        while True:
+            await asyncio.sleep(_TRACKER_POLL_INTERVAL)
+            state = _LIVE_TRACKERS.get(tracker_id)
+            if state is None or not state.active:
+                return
+            try:
+                game, summary = await _fetch_tracker_data(state)
+            except Exception as exc:
+                logging.warning("Tracker %s fetch failed: %s", tracker_id, exc)
+                continue
+            if game is None:
+                continue
+
+            final = _is_game_final(game)
+            embed = _build_tracker_embed(game, summary, _now_stamp(), final=final)
+            view  = LiveTrackerView(tracker_id)
+            if final:
+                for item in view.children:
+                    item.disabled = True
+
+            try:
+                channel = bot.get_channel(state.channel_id) or await bot.fetch_channel(state.channel_id)
+                message = await channel.fetch_message(state.message_id)
+                await message.edit(embed=embed, view=view)
+            except discord.NotFound:
+                # Message (or channel) deleted — clean up this tracker.
+                _stop_tracker(tracker_id)
+                return
+            except discord.Forbidden:
+                logging.warning("Tracker %s lost permission to edit its message — stopping.", tracker_id)
+                _stop_tracker(tracker_id)
+                return
+            except Exception as exc:
+                logging.warning("Tracker %s update failed: %s", tracker_id, exc)
+                continue
+
+            if final:
+                _stop_tracker(tracker_id)
+                return
+    except asyncio.CancelledError:
+        raise
+
+
+async def _run_all_games_tracker(tracker_id: str) -> None:
+    """Background loop: update an all-games tracker every _TRACKER_POLL_INTERVAL seconds."""
+    try:
+        while True:
+            await asyncio.sleep(_TRACKER_POLL_INTERVAL)
+            state = _LIVE_TRACKERS.get(tracker_id)
+            if state is None or not state.active:
+                return
+            try:
+                games, _ = await get_scoreboard_data()
+            except Exception as exc:
+                logging.warning("All-games tracker %s fetch failed: %s", tracker_id, exc)
+                continue
+
+            for g in games:
+                if _is_game_final(g):
+                    state.concluded_game_ids.add(g["id"])
+
+            all_done = bool(games) and all(_is_game_final(g) for g in games)
+            embed = _build_all_games_tracker_embed(games, _now_stamp())
+            view  = AllGamesTrackerView(tracker_id)
+            if all_done:
+                for item in view.children:
+                    item.disabled = True
+
+            try:
+                channel = bot.get_channel(state.channel_id) or await bot.fetch_channel(state.channel_id)
+                message = await channel.fetch_message(state.message_id)
+                await message.edit(embed=embed, view=view)
+            except discord.NotFound:
+                _stop_tracker(tracker_id)
+                return
+            except discord.Forbidden:
+                logging.warning("All-games tracker %s lost permission — stopping.", tracker_id)
+                _stop_tracker(tracker_id)
+                return
+            except Exception as exc:
+                logging.warning("All-games tracker %s update failed: %s", tracker_id, exc)
+                continue
+
+            if all_done:
+                _stop_tracker(tracker_id)
+                return
+    except asyncio.CancelledError:
+        raise
 
 
 class LiveGameView(discord.ui.View):
@@ -2477,11 +2887,31 @@ async def nflwatch_loop():
 
 
 @bot.tree.command(name="scoreboard", description="Show NFL scores — browse past weeks, current week, and live games")
-async def scoreboard(interaction: discord.Interaction):
-    await interaction.response.defer()
-    games, meta = await get_scoreboard_data()
-    view = ScoreboardView(games, meta)
-    await interaction.followup.send(embed=view.build_embed(), view=view)
+@app_commands.describe(channel="Channel to post the scoreboard (and any trackers) in — defaults to this channel")
+async def scoreboard(interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+    if channel is not None:
+        me = channel.guild.me if channel.guild else None
+        perms = channel.permissions_for(me) if me else None
+        if not perms or not (perms.send_messages and perms.embed_links):
+            await interaction.response.send_message(
+                f"🚩 I can't post embeds in {channel.mention} — check my permissions there.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        games, meta = await get_scoreboard_data()
+        view = ScoreboardView(games, meta, dest_channel_id=channel.id, owner_id=interaction.user.id)
+        await channel.send(embed=view.build_embed(), view=view)
+        await interaction.followup.send(f"📋 Scoreboard posted in {channel.mention}.", ephemeral=True)
+    else:
+        await interaction.response.defer()
+        games, meta = await get_scoreboard_data()
+        view = ScoreboardView(
+            games, meta,
+            dest_channel_id=interaction.channel_id,
+            owner_id=interaction.user.id,
+        )
+        await interaction.followup.send(embed=view.build_embed(), view=view)
 
 
 class GameStatsView(discord.ui.View):

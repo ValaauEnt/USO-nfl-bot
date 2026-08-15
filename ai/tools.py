@@ -18,7 +18,7 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_headlines",
-            "description": "Get the latest NFL news headlines from ESPN, Pro Football Talk, and Yahoo Sports.",
+            "description": "Get the latest NFL news headlines.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -212,6 +212,90 @@ TOOL_SCHEMAS = [
                     },
                 },
                 "required": [],
+            },
+        },
+    },
+    # ── Server creation / announcement tools ──────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "create_channel",
+            "description": (
+                "Create a new text or voice channel in the Discord server. "
+                "ONLY call this after the user has confirmed the channel name and type. "
+                "Requires Administrator or Manage Server permission. "
+                "To place the channel inside a category, provide category_name matching an existing category."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name for the new channel, e.g. 'trades' or 'league-news'",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["text", "voice"],
+                        "description": "Channel type: 'text' (default) or 'voice'",
+                    },
+                    "category_name": {
+                        "type": "string",
+                        "description": "Exact name of an existing category to place the channel in (optional)",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_category",
+            "description": (
+                "Create a new channel category in the Discord server. "
+                "ONLY call this after the user has confirmed the category name. "
+                "Requires Administrator or Manage Server permission. "
+                "Returns the created category name and ID so it can be referenced by create_channel."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name for the new category, e.g. 'Madden League'",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "announce",
+            "description": (
+                "Post an announcement embed to one or more server channels. "
+                "ONLY call this after the user has confirmed the message and target channel(s). "
+                "Requires Administrator or Manage Server permission. "
+                "Limit to 3 channels per call. For multi-channel announcements, confirm the list before calling."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "The announcement text to post.",
+                    },
+                    "channels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "List of channel names, mentions (<#ID>), or numeric IDs to post in. "
+                            "Maximum 3 channels per call."
+                        ),
+                    },
+                },
+                "required": ["message", "channels"],
             },
         },
     },

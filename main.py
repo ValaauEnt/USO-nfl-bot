@@ -43,8 +43,12 @@ from features.announcements import (
 )
 
 # Context vars so the tools executor can access guild/author without changing AIBrain's interface
-_ctx_guild  = contextvars.ContextVar("sm_guild",  default=None)
-_ctx_author = contextvars.ContextVar("sm_author", default=None)
+_ctx_guild         = contextvars.ContextVar("sm_guild",        default=None)
+_ctx_author        = contextvars.ContextVar("sm_author",       default=None)
+_ctx_action_count  = contextvars.ContextVar("action_count",    default=0)
+
+# Maximum approved Discord server-management actions the AI may execute per request
+_MAX_AI_ACTIONS: int = 5
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("uso")
@@ -855,14 +859,26 @@ def extract_stats_from_profile(profile: dict) -> list[dict]:
 
 
 def extract_stats_from_gamelog(gamelog: dict) -> list[dict]:
-    """Pull per-game stat rows out of the ESPN gamelog response."""
+    """Pull per-game stat rows out of the ESPN gamelog response.
+
+    Each entry now carries a ``season_label`` key so that views can filter
+    games to only the selected season type (Regular Season, Post Season, etc.).
+    """
     entries = []
+    seen_evt_ids: set = set()
     season_types = gamelog.get("seasonTypes") or []
     for st in season_types:
+        season_label = st.get("displayName", "Season")
         categories = st.get("categories") or []
         for cat in categories:
             events = cat.get("events") or []
             for evt in events:
+                evt_id = evt.get("eventId") or evt.get("id")
+                # Deduplicate events that appear in multiple categories
+                if evt_id and evt_id in seen_evt_ids:
+                    continue
+                if evt_id:
+                    seen_evt_ids.add(evt_id)
                 stat_parts = []
                 for s in evt.get("stats", []):
                     if isinstance(s, dict):
@@ -875,9 +891,10 @@ def extract_stats_from_gamelog(gamelog: dict) -> list[dict]:
                 entries.append({
                     "title": date.strip(),
                     "value": " • ".join(stat_parts) if stat_parts else "No stats",
+                    "season_label": season_label,
                 })
 
-    # fallback — original flat events list
+    # fallback — original flat events list (no season context available)
     if not entries:
         for event in gamelog.get("events", []):
             if not isinstance(event, dict):
@@ -894,10 +911,11 @@ def extract_stats_from_gamelog(gamelog: dict) -> list[dict]:
             entries.append({
                 "title": f"{date} vs {opponent}",
                 "value": " • ".join(stat_parts) if stat_parts else "No stats",
+                "season_label": "Season",
             })
 
     if not entries:
-        entries.append({"title": "Game Log", "value": "No game log data available."})
+        entries.append({"title": "Game Log", "value": "No game log data available.", "season_label": "Season"})
 
     return entries
 
@@ -1483,26 +1501,109 @@ class LeagueLeadersView(discord.ui.View):
 
 
 def build_game_stats_embed(game_name: str, summary: dict) -> discord.Embed:
+    """Build a detailed game stats embed from an ESPN game summary."""
+    # Extract status from header if available
+    status_detail = ""
+    header = summary.get("header", {})
+    for comp in header.get("competitions", [])[:1]:
+        detail = comp.get("status", {}).get("type", {}).get("shortDetail", "")
+        if detail:
+            status_detail = detail
+
     embed = discord.Embed(
         title=f"📊 {game_name}",
+        description=f"**{status_detail}**" if status_detail else None,
         color=0x7A5C2E,
     )
 
+    # ── Stat leaders ──────────────────────────────────────────────────────────
     leaders = summary.get("leaders", [])
-    if not leaders:
-        embed.description = "No leader stats available yet."
-        return embed
+    if leaders:
+        for group in leaders[:8]:
+            leader_list = group.get("leaders", [])
+            if not leader_list:
+                continue
+            leader = leader_list[0]
+            athlete = leader.get("athlete", {}).get("displayName", "Unknown")
+            display_value = leader.get("displayValue", "")
+            name = group.get("displayName") or group.get("name", "Leaders")
+            if name and display_value:
+                embed.add_field(name=name, value=f"**{athlete}** — {display_value}", inline=True)
+    else:
+        embed.add_field(name="Stats", value="No leader stats available yet.", inline=False)
 
-    for group in leaders[:4]:
+    # ── Team totals from boxscore ─────────────────────────────────────────────
+    boxscore = summary.get("boxscore", {})
+    for team_data in boxscore.get("teams", [])[:2]:
+        team_abbr = team_data.get("team", {}).get("abbreviation", "Team")
+        stat_lines = []
+        for sg in (team_data.get("statistics") or [])[:8]:
+            n = sg.get("displayName") or sg.get("name", "")
+            v = sg.get("displayValue") or sg.get("value", "")
+            if n and v:
+                stat_lines.append(f"{n}: {v}")
+        if stat_lines:
+            embed.add_field(
+                name=f"📋 {team_abbr} Team Stats",
+                value="\n".join(stat_lines),
+                inline=True,
+            )
+
+    embed.set_footer(text="Uce • Use 🔄 to refresh live stats")
+    return embed
+
+
+def build_live_game_embed(game: dict, summary: dict) -> discord.Embed:
+    """Detailed embed for a single live or current game (used by LiveGameView)."""
+    away        = game.get("away_name", game["away_team"])
+    home        = game.get("home_name", game["home_team"])
+    a_score     = game.get("away_score", "0")
+    h_score     = game.get("home_score", "0")
+    state       = game.get("state", "")
+    in_progress = game.get("in_progress", False)
+
+    if in_progress:
+        status_line = f"🔴 **LIVE** — {state}" if state else "🔴 **LIVE**"
+    elif game.get("completed"):
+        status_line = "✅ **Final**"
+    else:
+        status_line = f"🕐 {state}" if state else "🕐 Scheduled"
+
+    desc = f"**{away}** {a_score} — {h_score} **{home}**\n\n{status_line}"
+    if game.get("down_distance") and in_progress:
+        desc += f"\n{game['down_distance']}"
+
+    embed = discord.Embed(
+        title=f"🏈 {away} vs {home}",
+        description=desc,
+        color=0xD62828 if in_progress else 0x7A5C2E,
+    )
+
+    # Stat leaders
+    for group in summary.get("leaders", [])[:6]:
         leader_list = group.get("leaders", [])
         if not leader_list:
             continue
         leader = leader_list[0]
         athlete = leader.get("athlete", {}).get("displayName", "Unknown")
-        display_value = leader.get("displayValue", "No stats")
-        name = group.get("name", "Leaders")
-        embed.add_field(name=name, value=f"**{athlete}** — {display_value}", inline=False)
+        display_value = leader.get("displayValue", "")
+        name = group.get("displayName") or group.get("name", "")
+        if name and display_value:
+            embed.add_field(name=name, value=f"**{athlete}** — {display_value}", inline=True)
 
+    # Team totals from boxscore
+    for team_data in summary.get("boxscore", {}).get("teams", [])[:2]:
+        team_abbr = team_data.get("team", {}).get("abbreviation", "Team")
+        stat_lines = []
+        for sg in (team_data.get("statistics") or [])[:6]:
+            n = sg.get("displayName") or sg.get("name", "")
+            v = sg.get("displayValue") or sg.get("value", "")
+            if n and v:
+                stat_lines.append(f"{n}: {v}")
+        if stat_lines:
+            embed.add_field(name=f"📋 {team_abbr} Team Stats", value="\n".join(stat_lines), inline=True)
+
+    embed.set_footer(text="🔴 LIVE • Uce • Use 🔄 to update" if in_progress else "Uce")
     return embed
 
 
@@ -1595,47 +1696,115 @@ class PlayerStatsView(discord.ui.View):
 
 
 class GameLogView(discord.ui.View):
+    """Per-game game-log view with season-type filtering and prev/next navigation.
+
+    Entries are grouped by their ``season_label`` so that only games from the
+    selected season type are shown at a time.  The most recent season type is
+    pre-selected on first open.
+    """
+
     def __init__(self, player: dict, entries: list[dict]):
-        super().__init__(timeout=180)
+        super().__init__(timeout=300)
         self.player = player
-        self.entries = entries
+        self._all_entries = entries
+
+        # Group entries by season label (preserving insertion order = API order)
+        self._seasons: dict[str, list[dict]] = {}
+        for e in entries:
+            lbl = e.get("season_label", "Season")
+            self._seasons.setdefault(lbl, []).append(e)
+
+        self.current_season: str = next(iter(self._seasons), "Season")
         self.page = 0
+        self._rebuild()
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    @property
+    def _entries(self) -> list[dict]:
+        return self._seasons.get(self.current_season, self._all_entries)
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        labels = list(self._seasons.keys())
+
+        # Season-selector buttons (row 0, up to 4 seasons)
+        for lbl in labels[:4]:
+            style = (discord.ButtonStyle.primary if lbl == self.current_season
+                     else discord.ButtonStyle.secondary)
+            btn = discord.ui.Button(label=lbl[:20], style=style, row=0)
+
+            async def _season_cb(interaction: discord.Interaction, _lbl=lbl):
+                self.current_season = _lbl
+                self.page = 0
+                self._rebuild()
+                await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+            btn.callback = _season_cb
+            self.add_item(btn)
+
+        # Prev / Next game buttons (row 1)
+        entries = self._entries
+        prev_btn = discord.ui.Button(
+            label="◀ Prev Game", style=discord.ButtonStyle.secondary,
+            disabled=(self.page <= 0), row=1,
+        )
+
+        async def _prev_cb(interaction: discord.Interaction):
+            if self.page > 0:
+                self.page -= 1
+            self._rebuild()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+        prev_btn.callback = _prev_cb
+        self.add_item(prev_btn)
+
+        next_btn = discord.ui.Button(
+            label="Next Game ▶", style=discord.ButtonStyle.secondary,
+            disabled=(self.page >= len(entries) - 1), row=1,
+        )
+
+        async def _next_cb(interaction: discord.Interaction):
+            if self.page < len(self._entries) - 1:
+                self.page += 1
+            self._rebuild()
+            await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+        next_btn.callback = _next_cb
+        self.add_item(next_btn)
+
+    # ── Embed builder ─────────────────────────────────────────────────────────
 
     def build_embed(self) -> discord.Embed:
-        current = self.entries[self.page]
-        team_display = TEAM_NAMES.get(self.player["team"], self.player["team"])
+        entries = self._entries
+        team_display = TEAM_NAMES.get(self.player.get("team", ""), self.player.get("team", ""))
+        season_info  = f" — {self.current_season}" if self.current_season else ""
 
         embed = discord.Embed(
-            title=f"📋 {self.player['name']} Game Log",
+            title=f"📋 {self.player['name']} Game Log{season_info}",
             description=(
                 f"**Team:** {team_display}\n"
-                f"**Position:** {self.player['position']}\n"
-                f"**Jersey:** {self.player['jersey'] if self.player['jersey'] else 'N/A'}"
+                f"**Position:** {self.player.get('position', 'N/A')}\n"
+                f"**Jersey:** {self.player.get('jersey') or 'N/A'}"
             ),
             color=0x7A5C2E,
         )
 
         if self.player.get("headshot"):
             embed.set_thumbnail(url=self.player["headshot"])
-        elif TEAM_LOGOS.get(self.player["team"]):
+        elif TEAM_LOGOS.get(self.player.get("team", "")):
             embed.set_thumbnail(url=TEAM_LOGOS[self.player["team"]])
 
-        source_label = self.player.get("profile_source", "Source unavailable")
+        if not entries:
+            embed.add_field(name="No Data", value="No game log entries for this season.", inline=False)
+            embed.set_footer(text="Uce")
+            return embed
+
+        idx = min(self.page, len(entries) - 1)
+        current = entries[idx]
         embed.add_field(name=current["title"][:256], value=current["value"][:1024], inline=False)
-        embed.set_footer(text=f"Game {self.page + 1}/{len(self.entries)} • Profile source: {source_label}")
+        embed.set_footer(text=f"Game {idx + 1}/{len(entries)} • Uce")
         return embed
-
-    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
-    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page > 0:
-            self.page -= 1
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if self.page < len(self.entries) - 1:
-            self.page += 1
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
 def extract_season_stat_blocks(gamelog: dict) -> list[dict]:
@@ -1762,8 +1931,13 @@ class SeasonStatsView(discord.ui.View):
         elif TEAM_LOGOS.get(self.player.get("team", "")):
             embed.set_thumbnail(url=TEAM_LOGOS[self.player["team"]])
 
-        if self.gamelog_entries:
-            for entry in self.gamelog_entries[:8]:
+        # Filter entries to the currently selected season block
+        selected_label = self.season_blocks[self.page]["label"]
+        filtered = [e for e in self.gamelog_entries if e.get("season_label") == selected_label]
+        if not filtered:
+            filtered = self.gamelog_entries  # fallback: show all if no season match
+        if filtered:
+            for entry in filtered[:8]:
                 embed.add_field(name=entry["title"][:256], value=entry["value"][:1024], inline=False)
         else:
             embed.add_field(name="No Data", value="No game log entries available.", inline=False)
@@ -1773,61 +1947,219 @@ class SeasonStatsView(discord.ui.View):
 
 
 class ScoreboardView(discord.ui.View):
-    """Week-by-week scoreboard with Prev/Next and Regular Season/Playoffs toggles."""
+    """Week-by-week scoreboard with Prev/Next, season toggles, Refresh, team filter, and live-game selector."""
 
     def __init__(self, games: list[dict], meta: dict):
         super().__init__(timeout=300)
         self.games = games
         self.meta = meta
-        self._sync_buttons()
+        self._rebuild()
 
-    def _sync_buttons(self):
-        self.prev_button.disabled = self.meta["week"] <= 1
-        self.next_button.disabled = self.meta["week"] >= self.meta["max_week"]
-        self.reg_button.style = (
-            discord.ButtonStyle.primary if self.meta["season_type"] == 2
-            else discord.ButtonStyle.secondary
+    # ── Dynamic item builder ──────────────────────────────────────────────────
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+
+        # Row 0 — week navigation + refresh
+        prev = discord.ui.Button(
+            label="◀ Prev Week", style=discord.ButtonStyle.secondary,
+            disabled=(self.meta["week"] <= 1), row=0,
         )
-        self.playoff_button.style = (
-            discord.ButtonStyle.primary if self.meta["season_type"] == 3
-            else discord.ButtonStyle.secondary
+        prev.callback = self._prev_week
+        self.add_item(prev)
+
+        nxt = discord.ui.Button(
+            label="Next Week ▶", style=discord.ButtonStyle.secondary,
+            disabled=(self.meta["week"] >= self.meta["max_week"]), row=0,
         )
+        nxt.callback = self._next_week
+        self.add_item(nxt)
+
+        refresh = discord.ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=0)
+        refresh.callback = self._refresh
+        self.add_item(refresh)
+
+        # Row 1 — season type
+        reg = discord.ui.Button(
+            label="Regular Season",
+            style=discord.ButtonStyle.primary if self.meta["season_type"] == 2 else discord.ButtonStyle.secondary,
+            row=1,
+        )
+        reg.callback = self._regular_season
+        self.add_item(reg)
+
+        play = discord.ui.Button(
+            label="Playoffs",
+            style=discord.ButtonStyle.primary if self.meta["season_type"] == 3 else discord.ButtonStyle.secondary,
+            row=1,
+        )
+        play.callback = self._playoffs
+        self.add_item(play)
+
+        # Row 2 — team filter (teams playing this week)
+        team_options: list[discord.SelectOption] = []
+        seen_teams: set[str] = set()
+        for g in self.games[:25]:
+            for abbr, full in [(g["away_team"], g.get("away_name", g["away_team"])),
+                                (g["home_team"], g.get("home_name", g["home_team"]))]:
+                if abbr and abbr not in seen_teams:
+                    icon = "🔴" if g.get("in_progress") else ("✅" if g.get("completed") else "🕐")
+                    team_options.append(discord.SelectOption(
+                        label=f"{icon} {full}"[:100],
+                        value=abbr,
+                    ))
+                    seen_teams.add(abbr)
+        if team_options:
+            team_sel = discord.ui.Select(
+                placeholder="📋 Filter by team…",
+                options=team_options[:25],
+                row=2,
+            )
+            team_sel.callback = self._on_team_select
+            self.add_item(team_sel)
+
+        # Row 3 — live game selector (only when live games exist)
+        live_games = [g for g in self.games if g.get("in_progress")]
+        if live_games:
+            live_options = []
+            for g in live_games[:25]:
+                desc = f"{g['away_score']} – {g['home_score']} | {g.get('state', 'LIVE')}"[:100]
+                live_options.append(discord.SelectOption(
+                    label=f"🔴 {g['name']}"[:100],
+                    value=g["id"],
+                    description=desc,
+                ))
+            live_sel = discord.ui.Select(
+                placeholder="🔴 View a live game…",
+                options=live_options,
+                row=3,
+            )
+            live_sel.callback = self._on_live_game_select
+            self.add_item(live_sel)
+
+    # ── Core actions ──────────────────────────────────────────────────────────
 
     def build_embed(self) -> discord.Embed:
         return build_scoreboard_embed(self.games, self.meta)
 
-    async def _fetch_and_update(self, interaction: discord.Interaction):
+    async def _fetch_and_update(self, interaction: discord.Interaction) -> None:
         self.games, self.meta = await get_scoreboard_data(
             week=self.meta["week"],
             season_type=self.meta["season_type"],
             year=self.meta["year"],
         )
-        self._sync_buttons()
+        self._rebuild()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @discord.ui.button(label="◀ Prev Week", style=discord.ButtonStyle.secondary)
-    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _prev_week(self, interaction: discord.Interaction) -> None:
         self.meta["week"] -= 1
         await self._fetch_and_update(interaction)
 
-    @discord.ui.button(label="Next Week ▶", style=discord.ButtonStyle.secondary)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _next_week(self, interaction: discord.Interaction) -> None:
         self.meta["week"] += 1
         await self._fetch_and_update(interaction)
 
-    @discord.ui.button(label="Regular Season", style=discord.ButtonStyle.primary, row=1)
-    async def reg_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _refresh(self, interaction: discord.Interaction) -> None:
+        await self._fetch_and_update(interaction)
+
+    async def _regular_season(self, interaction: discord.Interaction) -> None:
         self.meta["season_type"] = 2
         self.meta["week"] = 18
         self.meta["max_week"] = 18
         await self._fetch_and_update(interaction)
 
-    @discord.ui.button(label="Playoffs", style=discord.ButtonStyle.secondary, row=1)
-    async def playoff_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _playoffs(self, interaction: discord.Interaction) -> None:
         self.meta["season_type"] = 3
         self.meta["week"] = 5
         self.meta["max_week"] = 5
         await self._fetch_and_update(interaction)
+
+    # ── Team filter select ────────────────────────────────────────────────────
+
+    async def _on_team_select(self, interaction: discord.Interaction) -> None:
+        team_abbr = interaction.data["values"][0]
+        team_games = [g for g in self.games if team_abbr in (g["away_team"], g["home_team"])]
+        if not team_games:
+            await interaction.response.defer()
+            return
+        game = team_games[0]
+        embed = build_scoreboard_embed([game], self.meta)
+        embed.title = f"🏈 {game.get('away_name', game['away_team'])} vs {game.get('home_name', game['home_team'])}"
+        await interaction.response.edit_message(embed=embed, view=_TeamGameView(game, self))
+
+    # ── Live game select ──────────────────────────────────────────────────────
+
+    async def _on_live_game_select(self, interaction: discord.Interaction) -> None:
+        game_id = interaction.data["values"][0]
+        game = next((g for g in self.games if g["id"] == game_id), None)
+        if not game:
+            await interaction.response.defer()
+            return
+        await interaction.response.defer()
+        try:
+            summary = await get_game_summary(game_id)
+        except Exception:
+            summary = {}
+        await interaction.edit_original_response(
+            embed=build_live_game_embed(game, summary),
+            view=LiveGameView(game, self),
+        )
+
+
+class _TeamGameView(discord.ui.View):
+    """Single-team game view with a Refresh button and a back-to-scoreboard button."""
+
+    def __init__(self, game: dict, parent: ScoreboardView):
+        super().__init__(timeout=180)
+        self.game   = game
+        self.parent = parent
+
+    @discord.ui.button(label="🔄 Refresh", style=discord.ButtonStyle.primary)
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        try:
+            games, _ = await get_scoreboard_data()
+            updated = next((g for g in games if g["id"] == self.game["id"]), self.game)
+            self.game = updated
+        except Exception:
+            pass
+        embed = build_scoreboard_embed([self.game], self.parent.meta)
+        embed.title = (
+            f"🏈 {self.game.get('away_name', self.game['away_team'])} "
+            f"vs {self.game.get('home_name', self.game['home_team'])}"
+        )
+        await interaction.edit_original_response(embed=embed, view=self)
+
+    @discord.ui.button(label="← All Scores", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.parent._rebuild()
+        await interaction.response.edit_message(embed=self.parent.build_embed(), view=self.parent)
+
+
+class LiveGameView(discord.ui.View):
+    """Detailed live game view with Refresh and back-to-scoreboard button."""
+
+    def __init__(self, game: dict, parent: ScoreboardView):
+        super().__init__(timeout=300)
+        self.game   = game
+        self.parent = parent
+
+    @discord.ui.button(label="🔄 Refresh", style=discord.ButtonStyle.primary)
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        try:
+            games, _ = await get_scoreboard_data()
+            updated  = next((g for g in games if g["id"] == self.game["id"]), self.game)
+            self.game = updated
+            summary  = await get_game_summary(self.game["id"])
+        except Exception:
+            summary = {}
+        await interaction.edit_original_response(embed=build_live_game_embed(self.game, summary), view=self)
+
+    @discord.ui.button(label="← All Scores", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.parent._rebuild()
+        await interaction.response.edit_message(embed=self.parent.build_embed(), view=self.parent)
 
 
 async def player_name_autocomplete(
@@ -2152,21 +2484,132 @@ async def scoreboard(interaction: discord.Interaction):
     await interaction.followup.send(embed=view.build_embed(), view=view)
 
 
-@bot.tree.command(name="gamestats", description="Show stat leaders for a live game")
-@app_commands.describe(team="Team abbreviation like KC, DAL, SF, BUF")
-async def gamestats(interaction: discord.Interaction, team: str):
+class GameStatsView(discord.ui.View):
+    """Game-selection dropdown + refresh for /gamestats.
+
+    Shows all games from the current week's scoreboard. Selecting a game
+    fetches its summary and rebuilds the embed. A Refresh button re-fetches
+    the currently shown game (useful for live games).
+    """
+
+    def __init__(self, games: list[dict], initial_game_id: str | None):
+        super().__init__(timeout=300)
+        self.games           = games
+        self.current_game_id = initial_game_id
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        options: list[discord.SelectOption] = []
+        for g in self.games[:25]:
+            icon = "🔴" if g.get("in_progress") else ("✅" if g.get("completed") else "🕐")
+            label = f"{icon} {g['name']}"[:100]
+            desc  = f"{g['away_score']} – {g['home_score']} | {g.get('state','')}"[:100]
+            options.append(discord.SelectOption(
+                label=label,
+                value=g["id"],
+                description=desc,
+                default=(g["id"] == self.current_game_id),
+            ))
+        if options:
+            sel = discord.ui.Select(
+                placeholder="Select a game to view stats…",
+                options=options,
+                row=0,
+            )
+            sel.callback = self._on_select
+            self.add_item(sel)
+
+        refresh = discord.ui.Button(label="🔄 Refresh", style=discord.ButtonStyle.secondary, row=1)
+        refresh.callback = self._on_refresh
+        self.add_item(refresh)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        self.current_game_id = interaction.data["values"][0]
+        target = next((g for g in self.games if g["id"] == self.current_game_id), None)
+        if target is None:
+            await interaction.response.defer()
+            return
+        await interaction.response.defer()
+        try:
+            summary = await get_game_summary(self.current_game_id)
+        except Exception:
+            summary = {}
+        self._rebuild()
+        await interaction.edit_original_response(
+            embed=build_game_stats_embed(target["name"], summary), view=self
+        )
+
+    async def _on_refresh(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        try:
+            self.games = await get_live_scoreboard()
+        except Exception:
+            pass
+        if self.current_game_id:
+            target = next((g for g in self.games if g["id"] == self.current_game_id), None)
+            if target:
+                try:
+                    summary = await get_game_summary(self.current_game_id)
+                except Exception:
+                    summary = {}
+                self._rebuild()
+                await interaction.edit_original_response(
+                    embed=build_game_stats_embed(target["name"], summary), view=self
+                )
+                return
+        self._rebuild()
+        embed = discord.Embed(
+            title="📊 NFL Game Stats",
+            description="Select a game below to view its stats.",
+            color=0x7A5C2E,
+        )
+        embed.set_footer(text="Uce • Select a game to view stats")
+        await interaction.edit_original_response(embed=embed, view=self)
+
+
+@bot.tree.command(name="gamestats", description="Show stat leaders for a game — pick from a dropdown or enter a team")
+@app_commands.describe(team="Team abbreviation like KC, DAL, SF, BUF (optional — use dropdown if omitted)")
+@app_commands.autocomplete(team=team_autocomplete)
+async def gamestats(interaction: discord.Interaction, team: str | None = None):
     await interaction.response.defer()
-    team = team.upper().strip()
-
     games = await get_live_scoreboard()
-    target = next((g for g in games if team in (g["away_team"], g["home_team"])), None)
 
-    if target is None:
-        await interaction.followup.send(f"No live or listed game found for `{team}`.")
-        return
-
-    summary = await get_game_summary(target["id"])
-    await interaction.followup.send(embed=build_game_stats_embed(target["name"], summary))
+    if team:
+        team = team.upper().strip()
+        # Allow full-name match too
+        if team not in {g["away_team"] for g in games} | {g["home_team"] for g in games}:
+            match = next(
+                (abbr for abbr, name in TEAM_NAMES.items() if team in name.upper()),
+                None,
+            )
+            if match:
+                team = match
+        target = next((g for g in games if team in (g["away_team"], g["home_team"])), None)
+        if target is None:
+            embed = discord.Embed(
+                title="📊 NFL Game Stats",
+                description=f"No game found for `{team}` this week. Select a game from the dropdown.",
+                color=0x7A5C2E,
+            )
+            view = GameStatsView(games, None)
+            await interaction.followup.send(embed=embed, view=view)
+            return
+        try:
+            summary = await get_game_summary(target["id"])
+        except Exception:
+            summary = {}
+        view = GameStatsView(games, target["id"])
+        await interaction.followup.send(embed=build_game_stats_embed(target["name"], summary), view=view)
+    else:
+        view = GameStatsView(games, None)
+        embed = discord.Embed(
+            title="📊 NFL Game Stats",
+            description="Select a game below to view its stats.",
+            color=0x7A5C2E,
+        )
+        embed.set_footer(text="Uce • Select a game to view stats")
+        await interaction.followup.send(embed=embed, view=view)
 
 
 @bot.tree.command(name="playerstats", description="Search a player by name and show stats")
@@ -2658,6 +3101,12 @@ async def create_channel(
     category: discord.CategoryChannel | None = None,
 ):
     await interaction.response.defer()
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send(
+            "🏈 **Flag on the play!** You don't have the permissions for this one. You need **Administrator** or **Manage Server** to make this call. 🚩",
+            ephemeral=True,
+        )
     kind = kind.lower().strip()
     try:
         if kind == "voice":
@@ -2688,6 +3137,12 @@ async def delete_channel(
     channel: discord.TextChannel | discord.VoiceChannel | discord.StageChannel | discord.CategoryChannel | discord.ForumChannel,
 ):
     await interaction.response.defer()
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send(
+            "🏈 **Flag on the play!** You don't have the permissions for this one. You need **Administrator** or **Manage Server** to make this call. 🚩",
+            ephemeral=True,
+        )
     name = channel.name
     try:
         await channel.delete()
@@ -2708,6 +3163,12 @@ async def delete_channel(
 @app_commands.describe(name="New server name")
 async def rename_server(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send(
+            "🏈 **Flag on the play!** You don't have the permissions for this one. You need **Administrator** or **Manage Server** to make this call. 🚩",
+            ephemeral=True,
+        )
     try:
         old_name = interaction.guild.name
         await interaction.guild.edit(name=name)
@@ -2728,6 +3189,12 @@ async def rename_server(interaction: discord.Interaction, name: str):
 @app_commands.describe(name="Category name")
 async def create_category(interaction: discord.Interaction, name: str):
     await interaction.response.defer()
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send(
+            "🏈 **Flag on the play!** You don't have the permissions for this one. You need **Administrator** or **Manage Server** to make this call. 🚩",
+            ephemeral=True,
+        )
     try:
         cat = await interaction.guild.create_category(name=name)
         embed = discord.Embed(
@@ -3086,6 +3553,119 @@ async def _ai_tools_executor(fn_name: str, fn_args: dict) -> str:
                         log.error("web_search all retries exhausted: %s", exc)
             return "Web search is temporarily unavailable, please try again in a moment."
 
+        # ── AI server-management action tools ──────────────────────────────
+        elif fn_name == "create_channel":
+            guild  = _ctx_guild.get()
+            author = _ctx_author.get()
+            if guild is None or author is None:
+                return "Server information is not available right now."
+            perms = author.guild_permissions
+            if not (perms.administrator or perms.manage_guild):
+                return "🏈 Flag on the play! You don't have the permissions for this one. You need Administrator or Manage Server to make this call. 🚩"
+            count = _ctx_action_count.get()
+            if count >= _MAX_AI_ACTIONS:
+                return "⚠️ That's too many actions for one request. Please split it into smaller requests."
+            _ctx_action_count.set(count + 1)
+            ch_name  = fn_args.get("name", "").strip()
+            kind     = fn_args.get("kind", "text").lower().strip()
+            cat_name = fn_args.get("category_name", "").strip()
+            if not ch_name:
+                return "❌ Channel name is required."
+            category = None
+            if cat_name:
+                category = next(
+                    (c for c in guild.categories if c.name.lower() == cat_name.lower()),
+                    next((c for c in guild.categories if cat_name.lower() in c.name.lower()), None),
+                )
+            try:
+                if kind == "voice":
+                    ch = await guild.create_voice_channel(name=ch_name, category=category)
+                    ch_type = "🔊 Voice"
+                else:
+                    ch = await guild.create_text_channel(name=ch_name, category=category)
+                    ch_type = "💬 Text"
+                loc = f" in **{category.name}**" if category else ""
+                log.info("[AI ACTION] create_channel guild=%s user=%s channel=%s type=%s", guild.id, author.id, ch.id, kind)
+                return f"✅ {ch_type} channel {ch.mention} created{loc}."
+            except discord.Forbidden:
+                return "❌ I don't have permission to create channels. Make sure I have the **Manage Channels** permission."
+            except Exception as _e:
+                return f"❌ Couldn't create the channel: {_e}"
+
+        elif fn_name == "create_category":
+            guild  = _ctx_guild.get()
+            author = _ctx_author.get()
+            if guild is None or author is None:
+                return "Server information is not available right now."
+            perms = author.guild_permissions
+            if not (perms.administrator or perms.manage_guild):
+                return "🏈 Flag on the play! You don't have the permissions for this one. You need Administrator or Manage Server to make this call. 🚩"
+            count = _ctx_action_count.get()
+            if count >= _MAX_AI_ACTIONS:
+                return "⚠️ That's too many actions for one request. Please split it into smaller requests."
+            _ctx_action_count.set(count + 1)
+            cat_name = fn_args.get("name", "").strip()
+            if not cat_name:
+                return "❌ Category name is required."
+            try:
+                cat = await guild.create_category(name=cat_name)
+                log.info("[AI ACTION] create_category guild=%s user=%s category=%s", guild.id, author.id, cat.id)
+                return f"✅ Category **{cat.name}** created. (ID: {cat.id} — use this name when creating channels inside it)"
+            except discord.Forbidden:
+                return "❌ I don't have permission to create categories. Make sure I have the **Manage Channels** permission."
+            except Exception as _e:
+                return f"❌ Couldn't create the category: {_e}"
+
+        elif fn_name == "announce":
+            guild  = _ctx_guild.get()
+            author = _ctx_author.get()
+            if guild is None or author is None:
+                return "Server information is not available right now."
+            perms = author.guild_permissions
+            if not (perms.administrator or perms.manage_guild):
+                return "🏈 Flag on the play! You don't have the permissions for this one. You need Administrator or Manage Server to make this call. 🚩"
+            msg_text  = fn_args.get("message", "").strip()
+            ch_refs   = fn_args.get("channels", [])
+            if not msg_text:
+                return "❌ Announcement message is required."
+            if not ch_refs:
+                return "❌ Please specify at least one channel for the announcement."
+            if len(ch_refs) > 3:
+                return "⚠️ Too many channels — please limit to 3 channels per announcement."
+            import re as _re
+            results = []
+            for ref in ch_refs:
+                ref = str(ref).strip()
+                m = _re.match(r"<#(\d+)>", ref)
+                if m:
+                    ref = m.group(1)
+                ref_clean = ref.lstrip("#").strip()
+                ch = None
+                if ref_clean.isdigit():
+                    ch = guild.get_channel(int(ref_clean))
+                else:
+                    ch = next((c for c in guild.text_channels if c.name.lower() == ref_clean.lower()), None)
+                if ch is None:
+                    results.append(f"❌ Channel '{ref_clean}' not found.")
+                    continue
+                if not ch.permissions_for(guild.me).send_messages:
+                    results.append(f"❌ No Send Messages permission in #{ch.name}.")
+                    continue
+                cur = _ctx_action_count.get()
+                if cur >= _MAX_AI_ACTIONS:
+                    results.append("⚠️ Action limit reached — stopping here.")
+                    break
+                _ctx_action_count.set(cur + 1)
+                try:
+                    ann_embed = discord.Embed(description=msg_text, color=0x7A5C2E)
+                    ann_embed.set_footer(text="Uce • Announcement")
+                    await ch.send(embed=ann_embed)
+                    log.info("[AI ACTION] announce guild=%s user=%s channel=%s", guild.id, author.id, ch.id)
+                    results.append(f"✅ Announced in {ch.mention}.")
+                except Exception as _e:
+                    results.append(f"❌ Couldn't post to #{ch.name}: {_e}")
+            return "\n".join(results) if results else "❌ No channels were processed."
+
         else:
             return f"(Tool '{fn_name}' not implemented yet)"
 
@@ -3194,6 +3774,7 @@ async def on_message(message: discord.Message):
     # Set context vars so tool executor can access guild/author
     _ctx_guild.set(message.guild)
     _ctx_author.set(message.author)
+    _ctx_action_count.set(0)  # reset per-request action counter
 
     async with message.channel.typing():
         reply = await ai_brain.process_message(
@@ -3219,39 +3800,6 @@ async def on_message(message: discord.Message):
 # ══════════════════════════════════════════════════════════════════════════════
 #  AI — Slash commands
 # ══════════════════════════════════════════════════════════════════════════════
-
-@bot.tree.command(name="ask", description="Ask Uce anything — AI-powered response")
-@app_commands.describe(question="Your question or message")
-async def ask(interaction: discord.Interaction, question: str):
-    await interaction.response.defer()
-    if ai_brain is None:
-        await interaction.followup.send("My brain is still warming up — try again in a moment. 🤖")
-        return
-    guild_id  = str(interaction.guild_id) if interaction.guild_id else "0"
-    ch_id     = str(interaction.channel_id)
-    settings  = get_server_settings(guild_id)
-    user_name = interaction.user.display_name
-
-    # Set context vars so server-management tools can access guild/author
-    _ctx_guild.set(interaction.guild)
-    _ctx_author.set(interaction.user)
-
-    reply = await ai_brain.process_message(
-        content    = question,
-        guild_id   = guild_id,
-        user_id    = str(interaction.user.id),
-        user_name  = user_name,
-        channel_id = ch_id,
-        settings   = settings,
-    )
-    await _dispatch_security_alerts()
-    if reply:
-        chunks = [reply[i:i+2000] for i in range(0, len(reply), 2000)]
-        await interaction.followup.send(chunks[0])
-        for chunk in chunks[1:]:
-            await interaction.followup.send(chunk)
-    else:
-        await interaction.followup.send("Hmm, I got nothing. Try again. 🤷")
 
 
 @bot.tree.command(
@@ -3834,6 +4382,12 @@ async def morning_checkin(
     timezone: str = "America/New_York",
 ):
     await interaction.response.defer(ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send(
+            "🏈 **Flag on the play!** You don't have the permissions for this one. You need **Administrator** or **Manage Server** to make this call. 🚩",
+            ephemeral=True,
+        )
     guild_id = str(interaction.guild_id)
     settings = get_server_settings(guild_id)
     cfg      = settings.get("morning_checkin") or {}
@@ -3870,6 +4424,12 @@ async def night_checkin(
     timezone: str = "America/New_York",
 ):
     await interaction.response.defer(ephemeral=True)
+    perms = interaction.user.guild_permissions
+    if not (perms.administrator or perms.manage_guild):
+        return await interaction.followup.send(
+            "🏈 **Flag on the play!** You don't have the permissions for this one. You need **Administrator** or **Manage Server** to make this call. 🚩",
+            ephemeral=True,
+        )
     guild_id = str(interaction.guild_id)
     settings = get_server_settings(guild_id)
     cfg      = settings.get("night_checkin") or {}

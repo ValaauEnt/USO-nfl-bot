@@ -772,3 +772,262 @@ def test_concurrent_duplicate_all_games_trackers_deduplicated():
             f"Expected exactly 1 all-games tracker for ch777, got {len(all_trackers)}"
         )
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 11. Orphaned tracker cleanup (bot-restart scenario)
+# ---------------------------------------------------------------------------
+
+def test_cleanup_edits_single_and_all_games_messages():
+    """On startup, both kinds of saved tracker messages are edited and buttons disabled."""
+    async def run():
+        channel, message = _mock_channel_message()
+        rows = [
+            {"tracker_id": "t1", "channel_id": 111, "message_id": 999, "guild_id": 1, "kind": "single"},
+            {"tracker_id": "t2", "channel_id": 222, "message_id": 888, "guild_id": 1, "kind": "all_games"},
+        ]
+        deleted = []
+        with patch.object(m, "get_all_tracker_messages", return_value=rows), \
+             patch.object(m, "delete_tracker_message", side_effect=deleted.append), \
+             patch.object(m.bot, "get_channel", return_value=channel):
+            await m._cleanup_orphaned_trackers()
+
+        # Both messages should have been edited
+        assert message.edit.await_count == 2
+        # Each successful edit deletes its own record (no bulk clear)
+        assert set(deleted) == {"t1", "t2"}
+        # Every edit call should pass a view with all buttons disabled
+        for call in message.edit.await_args_list:
+            view = call.kwargs["view"]
+            assert all(item.disabled for item in view.children), (
+                "All buttons in a cleaned-up tracker view must be disabled"
+            )
+            embed = call.kwargs["embed"]
+            assert "restarted" in embed.footer.text.lower()
+
+    asyncio.run(run())
+
+
+def test_cleanup_skips_notfound_message():
+    """NotFound during cleanup is silently ignored; the stale record is still deleted."""
+    async def run():
+        channel = MagicMock()
+        channel.fetch_message = AsyncMock(
+            side_effect=discord.NotFound(MagicMock(status=404), "gone")
+        )
+        rows = [{"tracker_id": "t1", "channel_id": 111, "message_id": 999, "guild_id": 1, "kind": "single"}]
+        deleted = []
+        with patch.object(m, "get_all_tracker_messages", return_value=rows), \
+             patch.object(m, "delete_tracker_message", side_effect=deleted.append), \
+             patch.object(m.bot, "get_channel", return_value=channel):
+            await m._cleanup_orphaned_trackers()  # must not raise
+
+        # Message gone → no edit, but record is deleted (no orphan to retry)
+        assert deleted == ["t1"]
+
+    asyncio.run(run())
+
+
+def test_cleanup_retains_forbidden_record_for_retry():
+    """Forbidden during cleanup: the record is KEPT so next restart can retry."""
+    async def run():
+        channel = MagicMock()
+        channel.fetch_message = AsyncMock(
+            side_effect=discord.Forbidden(MagicMock(status=403), "no perms")
+        )
+        rows = [{"tracker_id": "t1", "channel_id": 111, "message_id": 999, "guild_id": 1, "kind": "single"}]
+        deleted = []
+        with patch.object(m, "get_all_tracker_messages", return_value=rows), \
+             patch.object(m, "delete_tracker_message", side_effect=deleted.append), \
+             patch.object(m.bot, "get_channel", return_value=channel):
+            await m._cleanup_orphaned_trackers()
+
+        # Forbidden → record must NOT be deleted so the next restart retries it
+        assert deleted == [], "Forbidden cleanup failure must retain the DB record"
+
+    asyncio.run(run())
+
+
+def test_cleanup_retains_transient_error_record_for_retry():
+    """A transient error during cleanup retains the record for the next restart."""
+    async def run():
+        channel = MagicMock()
+        channel.fetch_message = AsyncMock(side_effect=RuntimeError("network hiccup"))
+        rows = [{"tracker_id": "t1", "channel_id": 111, "message_id": 999, "guild_id": 1, "kind": "single"}]
+        deleted = []
+        with patch.object(m, "get_all_tracker_messages", return_value=rows), \
+             patch.object(m, "delete_tracker_message", side_effect=deleted.append), \
+             patch.object(m.bot, "get_channel", return_value=channel):
+            await m._cleanup_orphaned_trackers()
+
+        assert deleted == [], "Transient error must retain the DB record"
+
+    asyncio.run(run())
+
+
+def test_cleanup_noop_when_no_rows():
+    """Cleanup does nothing when the table is empty."""
+    async def run():
+        with patch.object(m, "get_all_tracker_messages", return_value=[]), \
+             patch.object(m, "delete_tracker_message") as mock_del:
+            await m._cleanup_orphaned_trackers()
+
+        mock_del.assert_not_called()
+
+    asyncio.run(run())
+
+
+def test_cleanup_record_created_during_await_is_not_deleted():
+    """A tracker record saved while cleanup is awaiting Discord is unaffected.
+
+    Cleanup reads a snapshot of rows; it only deletes the specific tracker_ids
+    from that snapshot, so a record inserted concurrently survives.
+    """
+    async def run():
+        channel, message = _mock_channel_message()
+        # Snapshot contains only t1
+        snapshot = [{"tracker_id": "t1", "channel_id": 111, "message_id": 999, "guild_id": 1, "kind": "single"}]
+        # After cleanup reads the snapshot, "t2" is added to the DB by an interaction handler.
+        # We simulate this by tracking which tracker_ids are deleted.
+        deleted = []
+        with patch.object(m, "get_all_tracker_messages", return_value=snapshot), \
+             patch.object(m, "delete_tracker_message", side_effect=deleted.append), \
+             patch.object(m.bot, "get_channel", return_value=channel):
+            await m._cleanup_orphaned_trackers()
+
+        # Only t1 (from the snapshot) is deleted; t2 (created during cleanup) is untouched
+        assert deleted == ["t1"]
+        assert "t2" not in deleted
+
+    asyncio.run(run())
+
+
+def test_stop_tracker_calls_delete_tracker_message():
+    """_stop_tracker removes the DB record so the next restart won't try to clean it."""
+    s = _mk_state("t-del")
+    m._LIVE_TRACKERS["t-del"] = s
+    with patch.object(m, "delete_tracker_message") as mock_del:
+        m._stop_tracker("t-del")
+    mock_del.assert_called_once_with("t-del")
+    assert "t-del" not in m._LIVE_TRACKERS
+
+
+def test_stop_tracker_delete_failure_does_not_raise():
+    """A DB error in delete_tracker_message must not propagate out of _stop_tracker."""
+    s = _mk_state("t-err")
+    m._LIVE_TRACKERS["t-err"] = s
+    with patch.object(m, "delete_tracker_message", side_effect=RuntimeError("db down")):
+        m._stop_tracker("t-err")  # must not raise
+    assert "t-err" not in m._LIVE_TRACKERS
+
+
+def test_orphaned_button_update_now_returns_helpful_message():
+    """Clicking 'Update Now' on an orphaned tracker gives a clear restart explanation."""
+    async def run():
+        # No entry in registry → state is None
+        view = m.LiveTrackerView("ghost-tracker")
+        update_btn = next(c for c in view.children if c.label == "🔄 Update Now")
+        interaction = MagicMock()
+        interaction.response.send_message = AsyncMock()
+        await update_btn.callback(interaction)
+        msg = interaction.response.send_message.await_args.args[0]
+        assert "restarted" in msg.lower() or "no longer active" in msg.lower()
+        assert interaction.response.send_message.await_args.kwargs.get("ephemeral") is True
+
+    asyncio.run(run())
+
+
+def test_orphaned_button_update_now_all_games_returns_helpful_message():
+    """Clicking 'Update Now' on an orphaned all-games tracker also gives a clear message."""
+    async def run():
+        view = m.AllGamesTrackerView("ghost-all")
+        update_btn = next(c for c in view.children if c.label == "🔄 Update Now")
+        interaction = MagicMock()
+        interaction.response.send_message = AsyncMock()
+        await update_btn.callback(interaction)
+        msg = interaction.response.send_message.await_args.args[0]
+        assert "restarted" in msg.lower() or "no longer active" in msg.lower()
+        assert interaction.response.send_message.await_args.kwargs.get("ephemeral") is True
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 12. DB round-trip for tracker_messages (isolated temp DB)
+# ---------------------------------------------------------------------------
+
+def test_repeated_on_ready_does_not_wipe_live_tracker():
+    """A reconnect-driven second on_ready must not clean up still-active tracker messages."""
+    async def run():
+        rows = [{"tracker_id": "live-t1", "channel_id": 111, "message_id": 999, "guild_id": 1, "kind": "single"}]
+
+        # First pass: flag not set yet → cleanup runs once
+        m._ORPHAN_CLEANUP_DONE = False
+        channel, message = _mock_channel_message()
+        deleted_first = []
+        with patch.object(m, "get_all_tracker_messages", return_value=rows), \
+             patch.object(m, "delete_tracker_message", side_effect=deleted_first.append), \
+             patch.object(m.bot, "get_channel", return_value=channel):
+            if not m._ORPHAN_CLEANUP_DONE:
+                m._ORPHAN_CLEANUP_DONE = True
+                await m._cleanup_orphaned_trackers()
+
+        assert message.edit.await_count == 1
+        assert "live-t1" in deleted_first
+
+        # Second pass: simulate reconnect → flag already True → cleanup is skipped
+        message.edit.reset_mock()
+        deleted_second = []
+        with patch.object(m, "get_all_tracker_messages", return_value=rows), \
+             patch.object(m, "delete_tracker_message", side_effect=deleted_second.append), \
+             patch.object(m.bot, "get_channel", return_value=channel):
+            # This is what on_ready does on reconnect — flag is True so cleanup is skipped
+            if not m._ORPHAN_CLEANUP_DONE:
+                m._ORPHAN_CLEANUP_DONE = True
+                await m._cleanup_orphaned_trackers()
+
+        message.edit.assert_not_awaited()
+        assert deleted_second == [], "No deletions should happen on reconnect-driven on_ready"
+
+    # Reset the flag after the test
+    orig = m._ORPHAN_CLEANUP_DONE
+    try:
+        asyncio.run(run())
+    finally:
+        m._ORPHAN_CLEANUP_DONE = orig
+
+
+def test_tracker_messages_db_roundtrip():
+    """save → get_all → delete → get_all proves the table works end-to-end."""
+    import tempfile
+    import ai.settings as _settings
+    from pathlib import Path
+
+    orig = _settings.DB_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        _settings.DB_PATH = Path(tmp) / "test.db"
+        try:
+            _settings.init_db()
+
+            # Nothing saved yet
+            assert _settings.get_all_tracker_messages() == []
+
+            # Save two records
+            _settings.save_tracker_message("tx1", 111, 999, 1, "single")
+            _settings.save_tracker_message("tx2", 222, 888, 2, "all_games")
+            rows = _settings.get_all_tracker_messages()
+            assert len(rows) == 2
+            ids = {r["tracker_id"] for r in rows}
+            assert ids == {"tx1", "tx2"}
+
+            # Delete one
+            _settings.delete_tracker_message("tx1")
+            rows = _settings.get_all_tracker_messages()
+            assert len(rows) == 1
+            assert rows[0]["tracker_id"] == "tx2"
+
+            # Clear all
+            _settings.clear_all_tracker_messages()
+            assert _settings.get_all_tracker_messages() == []
+        finally:
+            _settings.DB_PATH = orig

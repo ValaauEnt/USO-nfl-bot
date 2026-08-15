@@ -33,6 +33,13 @@ def init_db():
                 pass  # column already exists
 
         conn.executescript("""
+            CREATE TABLE IF NOT EXISTS tracker_messages (
+                tracker_id TEXT PRIMARY KEY,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                guild_id   INTEGER,
+                kind       TEXT NOT NULL DEFAULT 'single'
+            );
             CREATE TABLE IF NOT EXISTS server_settings (
                 guild_id             TEXT PRIMARY KEY,
                 humor_level          TEXT DEFAULT 'funny',
@@ -78,6 +85,53 @@ def init_db():
                 updated_at REAL
             );
         """)
+        conn.commit()
+
+
+# ── Tracker-message persistence ───────────────────────────────────────────────
+
+def save_tracker_message(
+    tracker_id: str,
+    channel_id: int,
+    message_id: int,
+    guild_id: int | None,
+    kind: str,
+) -> None:
+    """Upsert a tracker message record so on_ready can clean it up after a restart."""
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO tracker_messages
+                (tracker_id, channel_id, message_id, guild_id, kind)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (tracker_id, channel_id, message_id, guild_id, kind),
+        )
+        conn.commit()
+
+
+def delete_tracker_message(tracker_id: str) -> None:
+    """Remove a tracker message record when the tracker stops normally."""
+    with _get_conn() as conn:
+        conn.execute(
+            "DELETE FROM tracker_messages WHERE tracker_id = ?", (tracker_id,)
+        )
+        conn.commit()
+
+
+def get_all_tracker_messages() -> list[dict]:
+    """Return all persisted tracker message records (used at startup for cleanup)."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT tracker_id, channel_id, message_id, guild_id, kind FROM tracker_messages"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def clear_all_tracker_messages() -> None:
+    """Delete every tracker message record (called after startup cleanup)."""
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM tracker_messages")
         conn.commit()
 
 

@@ -23,7 +23,11 @@ from bs4 import BeautifulSoup
 from typing import Optional
 
 # ── AI modules ────────────────────────────────────────────────────────────────
-from ai.settings  import init_db, get_server_settings, upsert_server_settings
+from ai.settings  import (
+    init_db, get_server_settings, upsert_server_settings,
+    save_tracker_message, delete_tracker_message,
+    get_all_tracker_messages, clear_all_tracker_messages,
+)
 from ai.memory    import recall_server, recall_user, remember_user, forget_user, clear_conversation
 from ai.brain     import AIBrain
 from ai import conversation as _conv
@@ -76,6 +80,11 @@ _LIVE_TRACKERS: dict[str, TrackerState] = {}
 # Maximum number of active trackers allowed per guild at any one time.
 _MAX_TRACKERS_PER_GUILD: int = 5
 
+# Set to True the first time on_ready completes startup cleanup so that
+# gateway reconnects (which re-fire on_ready) never re-run the cleanup
+# against live in-process trackers.
+_ORPHAN_CLEANUP_DONE: bool = False
+
 
 def _guild_tracker_count(guild_id: int | None) -> int:
     """Return the number of active trackers for *guild_id*."""
@@ -100,6 +109,11 @@ def _stop_tracker(tracker_id: str) -> None:
     state.active = False
     if state.task is not None and not state.task.done():
         state.task.cancel()
+    # Remove the persisted DB record so on_ready won't try to clean it up.
+    try:
+        delete_tracker_message(tracker_id)
+    except Exception:
+        pass  # best-effort; don't let a DB hiccup kill the stop path
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("uso")
@@ -2217,6 +2231,10 @@ class ScoreboardView(discord.ui.View):
             )
             return
         state.message_id = message.id
+        try:
+            save_tracker_message(tracker_id, channel_id, message.id, guild_id, "single")
+        except Exception:
+            pass  # best-effort; tracker still works without the DB record
         state.task = asyncio.create_task(_run_single_game_tracker(tracker_id))
         await interaction.followup.send(
             f"📡 Now tracking **{game.get('away_name', game['away_team'])} vs "
@@ -2288,6 +2306,10 @@ class ScoreboardView(discord.ui.View):
             return
         state.message_id = message.id
         _LIVE_TRACKERS[tracker_id] = state
+        try:
+            save_tracker_message(tracker_id, channel_id, message.id, guild_id, "all_games")
+        except Exception:
+            pass  # best-effort; tracker still works without the DB record
         state.task = asyncio.create_task(_run_all_games_tracker(tracker_id))
         await interaction.followup.send(
             f"📡 Now tracking **all live games** in {dest_channel.mention} — updates every 5 minutes.",
@@ -2453,7 +2475,11 @@ class LiveTrackerView(discord.ui.View):
     async def update_now(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = self._state()
         if state is None or not state.active:
-            await interaction.response.send_message("This tracker has ended.", ephemeral=True)
+            await interaction.response.send_message(
+                "This tracker is no longer active — the bot may have restarted. "
+                "Use `/scoreboard` to start a new tracker.",
+                ephemeral=True,
+            )
             return
         await interaction.response.defer()
         game, summary = await _fetch_tracker_data(state)
@@ -2499,7 +2525,11 @@ class AllGamesTrackerView(discord.ui.View):
     async def update_now(self, interaction: discord.Interaction, button: discord.ui.Button):
         state = self._state()
         if state is None or not state.active:
-            await interaction.response.send_message("This tracker has ended.", ephemeral=True)
+            await interaction.response.send_message(
+                "This tracker is no longer active — the bot may have restarted. "
+                "Use `/scoreboard` to start a new tracker.",
+                ephemeral=True,
+            )
             return
         await interaction.response.defer()
         games, _ = await get_scoreboard_data()
@@ -2518,6 +2548,12 @@ class AllGamesTrackerView(discord.ui.View):
         if state and not _tracker_auth_ok(interaction, owner_id):
             await interaction.response.send_message(
                 "🚩 Flag on the play — only the tracker's creator or a server admin can end tracking.",
+                ephemeral=True,
+            )
+            return
+        if state is None:
+            await interaction.response.send_message(
+                "This tracker is no longer active — the bot may have restarted.",
                 ephemeral=True,
             )
             return
@@ -4968,6 +5004,83 @@ async def checkin_loop():
 
 
 
+async def _cleanup_orphaned_trackers() -> None:
+    """Edit any tracker messages left over from a previous process run.
+
+    After a restart all in-memory tracker state is gone, but the Discord
+    messages are still showing "Auto-updates every 5 min" with live buttons.
+    This function reads the snapshot of saved tracker messages, edits each one
+    to a clear "tracking ended — bot restarted" state with disabled buttons,
+    and deletes the DB record **per-row** only after a successful edit (or when
+    the message/channel is confirmed gone via NotFound).
+
+    Records whose edit fails with Forbidden or a transient error are intentionally
+    **retained** in the DB so the next restart can try again.  This also means
+    tracker records created by interaction handlers *while* this function is
+    awaiting Discord API calls are unaffected — we never do a bulk table wipe.
+    """
+    rows = get_all_tracker_messages()
+    if not rows:
+        return
+
+    cleaned = 0
+    for row in rows:
+        try:
+            channel = (
+                bot.get_channel(row["channel_id"])
+                or await bot.fetch_channel(row["channel_id"])
+            )
+            message = await channel.fetch_message(row["message_id"])
+
+            embed = discord.Embed(
+                title="📡 Tracker Offline",
+                description=(
+                    "**Auto-tracking has ended** because the bot was restarted.\n\n"
+                    "Use `/scoreboard` to start a fresh tracker."
+                ),
+                color=0x808080,
+            )
+            embed.set_footer(text="Tracking ended — bot restarted")
+
+            # Reuse the same view class so the button layout matches, but
+            # disable every button so users cannot interact with it.
+            if row["kind"] == "single":
+                view: discord.ui.View = LiveTrackerView(row["tracker_id"])
+            else:
+                view = AllGamesTrackerView(row["tracker_id"])
+            for item in view.children:
+                item.disabled = True
+
+            await message.edit(embed=embed, view=view)
+            # Success — remove the record so it isn't retried on the next restart.
+            delete_tracker_message(row["tracker_id"])
+            cleaned += 1
+        except discord.NotFound:
+            # Message or channel already deleted — no orphan to worry about;
+            # drop the stale record.
+            delete_tracker_message(row["tracker_id"])
+        except discord.Forbidden:
+            # No permission to edit — retain the record for the next restart
+            # so we keep trying rather than permanently abandoning the message.
+            logging.warning(
+                "Cannot edit orphaned tracker message %s in channel %s — "
+                "missing permissions; will retry on next restart.",
+                row["message_id"],
+                row["channel_id"],
+            )
+        except Exception as exc:
+            # Transient error — retain the record for the next restart.
+            logging.warning(
+                "Orphaned tracker cleanup failed for tracker_id=%s: %s — "
+                "will retry on next restart.",
+                row["tracker_id"],
+                exc,
+            )
+
+    if cleaned:
+        print(f"Cleaned up {cleaned} orphaned tracker message(s).")
+
+
 @bot.event
 async def on_ready():
     global session, ai_brain
@@ -4983,6 +5096,17 @@ async def on_ready():
         print("Database initialised.")
     except Exception as e:
         print(f"Database init error: {e}")
+
+    # Edit any tracker messages that were left live by the previous process.
+    # Guard with _ORPHAN_CLEANUP_DONE so reconnect-driven on_ready re-fires
+    # don't wipe the records of *currently live* trackers.
+    global _ORPHAN_CLEANUP_DONE
+    if not _ORPHAN_CLEANUP_DONE:
+        _ORPHAN_CLEANUP_DONE = True  # set before await so concurrent on_ready fires are safe
+        try:
+            await _cleanup_orphaned_trackers()
+        except Exception as e:
+            print(f"Orphaned tracker cleanup error: {e}")
 
     # Build AI brain
     if ai_brain is None:

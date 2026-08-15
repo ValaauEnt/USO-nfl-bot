@@ -2257,7 +2257,42 @@ class ScoreboardView(discord.ui.View):
         try:
             save_tracker_message(tracker_id, channel_id, message.id, guild_id, "single")
         except Exception:
-            pass  # best-effort; tracker still works without the DB record
+            # DB write failed.  Attempt to compensate by deleting the Discord message
+            # so there is nothing to orphan.
+            _discord_delete_ok = False
+            try:
+                await message.delete()
+                _discord_delete_ok = True
+            except Exception:
+                pass
+
+            if _discord_delete_ok:
+                # Message is gone — safe to remove the in-memory reservation.
+                # _stop_tracker calls delete_tracker_message which is a no-op here
+                # (no record was committed), so registry + DB stay consistent.
+                _stop_tracker(tracker_id)
+            else:
+                # Both save and delete failed: the Discord message is a potential orphan.
+                # Retry the save so restart cleanup (_cleanup_orphaned_trackers) can
+                # find and clean it up on the next boot.
+                try:
+                    save_tracker_message(tracker_id, channel_id, message.id, guild_id, "single")
+                except Exception:
+                    log.warning(
+                        "Tracker %s: save and compensating-delete both failed; "
+                        "channel %s message %s may be orphaned until restart cleanup.",
+                        tracker_id, channel_id, message.id,
+                    )
+                # Remove from in-memory registry WITHOUT deleting the DB record so
+                # the restart cleanup can still discover the orphaned message.
+                st = _LIVE_TRACKERS.pop(tracker_id, None)
+                if st is not None:
+                    st.active = False
+
+            await interaction.followup.send(
+                "⚠️ Could not save the tracker — please try again.", ephemeral=True
+            )
+            return
         state.task = asyncio.create_task(_run_single_game_tracker(tracker_id))
         await interaction.followup.send(
             f"📡 Now tracking **{game.get('away_name', game['away_team'])} vs "
@@ -2341,7 +2376,39 @@ class ScoreboardView(discord.ui.View):
         try:
             save_tracker_message(tracker_id, channel_id, message.id, guild_id, "all_games")
         except Exception:
-            pass  # best-effort; tracker still works without the DB record
+            # DB write failed.  Attempt to compensate by deleting the Discord message
+            # so there is nothing to orphan.
+            _discord_delete_ok = False
+            try:
+                await message.delete()
+                _discord_delete_ok = True
+            except Exception:
+                pass
+
+            if _discord_delete_ok:
+                # Message is gone — safe to remove the in-memory reservation.
+                _stop_tracker(tracker_id)
+            else:
+                # Both save and delete failed: the Discord message is a potential orphan.
+                # Retry the save so restart cleanup can find and remove the message.
+                try:
+                    save_tracker_message(tracker_id, channel_id, message.id, guild_id, "all_games")
+                except Exception:
+                    log.warning(
+                        "Tracker %s: save and compensating-delete both failed; "
+                        "channel %s message %s may be orphaned until restart cleanup.",
+                        tracker_id, channel_id, message.id,
+                    )
+                # Remove from in-memory registry WITHOUT deleting the DB record so
+                # the restart cleanup can still discover the orphaned message.
+                st = _LIVE_TRACKERS.pop(tracker_id, None)
+                if st is not None:
+                    st.active = False
+
+            await interaction.followup.send(
+                "⚠️ Could not save the tracker — please try again.", ephemeral=True
+            )
+            return
         state.task = asyncio.create_task(_run_all_games_tracker(tracker_id))
         await interaction.followup.send(
             f"📡 Now tracking **all live games** in {dest_channel.mention} — updates every 5 minutes.",

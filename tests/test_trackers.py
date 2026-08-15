@@ -74,6 +74,18 @@ def _clean_registry():
     m._LIVE_TRACKERS.clear()
 
 
+@pytest.fixture(autouse=True)
+def _no_real_db_writes(monkeypatch):
+    """Prevent save_tracker_message / delete_tracker_message from touching the real DB.
+
+    Tests that need to assert on these calls use patch.object() inside their body,
+    which overrides this default noop for the duration of the with-block and restores
+    the noop afterwards — so neither function bleeds into neighbour tests.
+    """
+    monkeypatch.setattr(m, "save_tracker_message", MagicMock())
+    monkeypatch.setattr(m, "delete_tracker_message", MagicMock())
+
+
 # ---------------------------------------------------------------------------
 # 1. TrackerState + registry
 # ---------------------------------------------------------------------------
@@ -1353,5 +1365,311 @@ def test_trackers_cmd_non_admin_rejected():
         await m.trackers_cmd.callback(inter, tracker_id=None)
         msg = inter.followup.send.await_args.args[0]
         assert "permission" in msg.lower()
+
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# 14. save_tracker_message / DB-sync tests
+# ---------------------------------------------------------------------------
+# Three branches are tested for each tracker kind:
+#
+#  A) Happy path: save succeeds → tracker registered, task started, DB record written.
+#
+#  B) Save fails + message.delete() succeeds: no Discord message exists; the tracker
+#     slot is cleanly removed from the in-memory registry.  _stop_tracker is used to
+#     remove from registry (its delete_tracker_message call is a no-op against a
+#     non-existent DB row).
+#
+#  C) Save fails + message.delete() also fails: the Discord message is a potential
+#     orphan.  A retry-save is attempted so the restart cleanup
+#     (_cleanup_orphaned_trackers) can find and delete the message on next boot.
+#     The registry slot is removed from memory WITHOUT calling delete_tracker_message,
+#     so the DB record (if the retry succeeded) is preserved for cleanup.
+#
+# KNOWN GAP: a hard process crash in the microseconds between dest_channel.send()
+# returning and save_tracker_message() executing leaves the message with no DB record.
+# This window cannot be closed without a transactional lock between Discord and SQLite;
+# the retry-save path above ensures graceful Python exceptions are fully covered.
+
+def test_single_tracker_save_is_called_with_correct_args():
+    """Happy path (A): save_tracker_message is called with the right tracker metadata."""
+    async def run():
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(555)
+        inter = _mk_click_interaction_with_guild(user_id=200, channel=channel, guild_id=1)
+        inter.data = {"values": ["g1"]}
+        message = MagicMock(id=12345)
+        channel.send = AsyncMock(return_value=message)
+
+        saved_calls = []
+        with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+             patch.object(m, "save_tracker_message",
+                          side_effect=lambda *a: saved_calls.append(a)), \
+             patch.object(m.asyncio, "create_task",
+                          lambda coro: (coro.close(), MagicMock())[1]):
+            await view._on_live_game_select(inter)
+
+        assert len(saved_calls) == 1, "save_tracker_message must be called exactly once"
+        tid, cid, mid, gid, kind = saved_calls[0]
+        assert cid == 555
+        assert mid == 12345
+        assert gid == 1
+        assert kind == "single"
+        # Tracker must remain active
+        assert any(s.tracker_id == tid for s in m._LIVE_TRACKERS.values())
+
+    asyncio.run(run())
+
+
+def test_single_tracker_save_failure_delete_succeeds():
+    """Branch B: save fails but Discord delete succeeds → registry cleared, no task started."""
+    async def run():
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(555)
+        inter = _mk_click_interaction_with_guild(user_id=200, channel=channel, guild_id=1)
+        inter.data = {"values": ["g1"]}
+        message = AsyncMock(id=12345)
+        channel.send = AsyncMock(return_value=message)
+
+        tasks_created = []
+        with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+             patch.object(m, "save_tracker_message",
+                          side_effect=RuntimeError("db locked")), \
+             patch.object(m.asyncio, "create_task",
+                          lambda coro: (coro.close(), tasks_created.append(True), MagicMock())[2]):
+            await view._on_live_game_select(inter)
+
+        # Discord message was deleted by the compensating path
+        message.delete.assert_awaited_once()
+        # Registry must be empty (tracker was removed)
+        assert len(m._LIVE_TRACKERS) == 0, "Failed-save tracker must be removed from registry"
+        # No background polling task should have been started
+        assert len(tasks_created) == 0, "No polling task should start when save fails"
+        # User must receive an error reply
+        err_msg = inter.followup.send.await_args.args[0]
+        assert "could not save" in err_msg.lower() or "try again" in err_msg.lower()
+
+    asyncio.run(run())
+
+
+def test_single_tracker_save_failure_and_delete_failure_retries_save_for_cleanup():
+    """Branch C: save fails AND delete fails → retry-save so restart cleanup can find the orphan."""
+    async def run():
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(555)
+        inter = _mk_click_interaction_with_guild(user_id=200, channel=channel, guild_id=1)
+        inter.data = {"values": ["g1"]}
+        message = AsyncMock(id=12345)
+        message.delete = AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "no perms"))
+        channel.send = AsyncMock(return_value=message)
+
+        save_calls = []
+        def failing_then_retry(*a):
+            save_calls.append(a)
+            if len(save_calls) == 1:
+                raise RuntimeError("db locked")   # first call fails
+            # second call (retry) succeeds → record written for cleanup
+
+        tasks_created = []
+        with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+             patch.object(m, "save_tracker_message", side_effect=failing_then_retry), \
+             patch.object(m.asyncio, "create_task",
+                          lambda coro: (coro.close(), tasks_created.append(True), MagicMock())[2]):
+            await view._on_live_game_select(inter)
+
+        # save_tracker_message must have been called twice (initial attempt + retry)
+        assert len(save_calls) == 2, (
+            f"Expected 2 save calls (initial + retry), got {len(save_calls)}"
+        )
+        # Both calls must use the same tracker/channel/message/guild/kind
+        assert save_calls[0][2] == 12345 and save_calls[1][2] == 12345, \
+            "Retry must use the same message_id as the initial attempt"
+        assert save_calls[0][4] == "single" and save_calls[1][4] == "single"
+
+        # In-memory registry must be cleared (tracker no longer active in process)
+        assert len(m._LIVE_TRACKERS) == 0, "Tracker must be removed from in-memory registry"
+        # No background task started
+        assert len(tasks_created) == 0
+        # User receives error reply
+        err_msg = inter.followup.send.await_args.args[0]
+        assert "could not save" in err_msg.lower() or "try again" in err_msg.lower()
+
+    asyncio.run(run())
+
+
+def test_single_tracker_save_failure_and_delete_failure_registry_cleared_even_if_retry_fails():
+    """Branch C (retry also fails): registry is still cleared and the handler does not raise."""
+    async def run():
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(555)
+        inter = _mk_click_interaction_with_guild(user_id=200, channel=channel, guild_id=1)
+        inter.data = {"values": ["g1"]}
+        message = AsyncMock(id=12345)
+        message.delete = AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "no perms"))
+        channel.send = AsyncMock(return_value=message)
+
+        with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+             patch.object(m, "save_tracker_message",
+                          side_effect=RuntimeError("db down")), \
+             patch.object(m.asyncio, "create_task",
+                          lambda coro: (coro.close(), MagicMock())[1]):
+            # Must not raise even if all three operations (save, delete, retry-save) fail
+            await view._on_live_game_select(inter)
+
+        # Registry must still be empty (handler must clean up)
+        assert len(m._LIVE_TRACKERS) == 0
+
+    asyncio.run(run())
+
+
+def test_single_tracker_cleanup_can_find_orphan_saved_by_retry():
+    """Branch C end-to-end: the DB record written by retry-save is found by restart cleanup."""
+    import tempfile
+    import ai.settings as _settings
+    from pathlib import Path
+
+    orig_path = _settings.DB_PATH
+    with tempfile.TemporaryDirectory() as tmp:
+        _settings.DB_PATH = Path(tmp) / "test.db"
+        try:
+            _settings.init_db()
+
+            # Simulate the retry-save: initial attempt raises, retry succeeds
+            call_count = [0]
+            def failing_first(*a):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise RuntimeError("first write failed")
+                _settings.save_tracker_message(*a)
+
+            async def run():
+                meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+                view = m.ScoreboardView([_live_game("g1")], meta,
+                                        dest_channel_id=None, owner_id=100)
+                channel = _make_channel(555)
+                inter = _mk_click_interaction_with_guild(user_id=200, channel=channel, guild_id=1)
+                inter.data = {"values": ["g1"]}
+                message = AsyncMock(id=99999)
+                message.delete = AsyncMock(
+                    side_effect=discord.Forbidden(MagicMock(status=403), "no perms")
+                )
+                channel.send = AsyncMock(return_value=message)
+
+                with patch.object(m, "get_game_summary", AsyncMock(return_value={})), \
+                     patch.object(m, "save_tracker_message", side_effect=failing_first), \
+                     patch.object(m.asyncio, "create_task",
+                                  lambda coro: (coro.close(), MagicMock())[1]):
+                    await view._on_live_game_select(inter)
+
+            asyncio.run(run())
+
+            # The retry-save must have written a record; cleanup can discover it
+            rows = _settings.get_all_tracker_messages()
+            assert len(rows) == 1, (
+                "Retry-save must leave a DB record so restart cleanup can find the orphan"
+            )
+            assert rows[0]["message_id"] == 99999
+            assert rows[0]["kind"] == "single"
+        finally:
+            _settings.DB_PATH = orig_path
+
+
+def test_all_games_tracker_save_is_called_with_correct_args():
+    """Happy path (A): save_tracker_message is called correctly for an all-games tracker."""
+    async def run():
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(666)
+        inter = _mk_click_interaction_with_guild(user_id=300, channel=channel, guild_id=1)
+        message = MagicMock(id=67890)
+        channel.send = AsyncMock(return_value=message)
+
+        saved_calls = []
+        with patch.object(m, "get_scoreboard_data",
+                          AsyncMock(return_value=([_live_game("g1")], meta))), \
+             patch.object(m, "save_tracker_message",
+                          side_effect=lambda *a: saved_calls.append(a)), \
+             patch.object(m.asyncio, "create_task",
+                          lambda coro: (coro.close(), MagicMock())[1]):
+            await view._track_all_live_games(inter)
+
+        assert len(saved_calls) == 1
+        tid, cid, mid, gid, kind = saved_calls[0]
+        assert cid == 666
+        assert mid == 67890
+        assert gid == 1
+        assert kind == "all_games"
+        assert any(s.tracker_id == tid for s in m._LIVE_TRACKERS.values())
+
+    asyncio.run(run())
+
+
+def test_all_games_tracker_save_failure_delete_succeeds():
+    """Branch B (all-games): save fails, Discord delete succeeds → registry cleared."""
+    async def run():
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(666)
+        inter = _mk_click_interaction_with_guild(user_id=300, channel=channel, guild_id=1)
+        message = AsyncMock(id=67890)
+        channel.send = AsyncMock(return_value=message)
+
+        tasks_created = []
+        with patch.object(m, "get_scoreboard_data",
+                          AsyncMock(return_value=([_live_game("g1")], meta))), \
+             patch.object(m, "save_tracker_message",
+                          side_effect=RuntimeError("db locked")), \
+             patch.object(m.asyncio, "create_task",
+                          lambda coro: (coro.close(), tasks_created.append(True), MagicMock())[2]):
+            await view._track_all_live_games(inter)
+
+        message.delete.assert_awaited_once()
+        assert len(m._LIVE_TRACKERS) == 0, "Failed-save tracker must be removed from registry"
+        assert len(tasks_created) == 0, "No polling task should start when save fails"
+        err_msg = inter.followup.send.await_args.args[0]
+        assert "could not save" in err_msg.lower() or "try again" in err_msg.lower()
+
+    asyncio.run(run())
+
+
+def test_all_games_tracker_save_failure_and_delete_failure_retries_save_for_cleanup():
+    """Branch C (all-games): save fails AND delete fails → retry-save preserves cleanup record."""
+    async def run():
+        meta = {"week": 1, "max_week": 18, "season_type": 2, "year": 2026}
+        view = m.ScoreboardView([_live_game("g1")], meta, dest_channel_id=None, owner_id=100)
+        channel = _make_channel(666)
+        inter = _mk_click_interaction_with_guild(user_id=300, channel=channel, guild_id=1)
+        message = AsyncMock(id=67890)
+        message.delete = AsyncMock(side_effect=discord.Forbidden(MagicMock(status=403), "no perms"))
+        channel.send = AsyncMock(return_value=message)
+
+        save_calls = []
+        def failing_then_retry(*a):
+            save_calls.append(a)
+            if len(save_calls) == 1:
+                raise RuntimeError("db locked")
+
+        tasks_created = []
+        with patch.object(m, "get_scoreboard_data",
+                          AsyncMock(return_value=([_live_game("g1")], meta))), \
+             patch.object(m, "save_tracker_message", side_effect=failing_then_retry), \
+             patch.object(m.asyncio, "create_task",
+                          lambda coro: (coro.close(), tasks_created.append(True), MagicMock())[2]):
+            await view._track_all_live_games(inter)
+
+        assert len(save_calls) == 2, (
+            f"Expected 2 save calls (initial + retry), got {len(save_calls)}"
+        )
+        assert save_calls[0][2] == 67890 and save_calls[1][2] == 67890
+        assert save_calls[0][4] == "all_games" and save_calls[1][4] == "all_games"
+        assert len(m._LIVE_TRACKERS) == 0
+        assert len(tasks_created) == 0
+        err_msg = inter.followup.send.await_args.args[0]
+        assert "could not save" in err_msg.lower() or "try again" in err_msg.lower()
 
     asyncio.run(run())
